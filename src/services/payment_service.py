@@ -11,8 +11,22 @@ class MercadoPagoService:
 
     def __init__(self):
         settings = get_settings()
-        self._sdk = mercadopago.SDK(settings.mercadopago_access_token)
+        self._sdk = None
         self._expiration_minutes = settings.pix_expiration_minutes
+
+        # Inicializa SDK apenas se token está configurado
+        if settings.mercadopago_access_token:
+            try:
+                self._sdk = mercadopago.SDK(settings.mercadopago_access_token)
+                logger.success("✅ Mercado Pago SDK inicializado")
+            except Exception as e:
+                logger.warning(f"⚠️ Erro ao inicializar Mercado Pago: {e}")
+        else:
+            logger.info("ℹ️ Mercado Pago não configurado (MERCADOPAGO_ACCESS_TOKEN)")
+
+    def is_available(self) -> bool:
+        """Verifica se o gateway Mercado Pago está disponível."""
+        return self._sdk is not None
 
     async def create_pix_payment(
         self,

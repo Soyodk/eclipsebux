@@ -9,6 +9,7 @@ from src.database import (
     TicketCreate,
     LogRepository,
 )
+from src.services import roblox_api
 
 
 class TicketCreateButton(ui.View):
@@ -239,7 +240,7 @@ class TicketActionsView(ui.View):
         row=0,
     )
     async def start_buy(self, interaction: discord.Interaction, button: ui.Button):
-        """Abre modal para iniciar compra."""
+        """Abre modal para iniciar compra com novo fluxo."""
         # Busca ticket pelo canal
         ticket = await TicketRepository.get_by_channel(interaction.channel.id)
         if not ticket:
@@ -248,7 +249,7 @@ class TicketActionsView(ui.View):
             )
             return
 
-        modal = BuyRobuxModal(ticket["ticket_id"])
+        modal = UsernameInputModal(ticket["ticket_id"])
         await interaction.response.send_modal(modal)
 
     @ui.button(
@@ -336,61 +337,6 @@ class TicketActionsView(ui.View):
         )
 
 
-class BuyRobuxModal(ui.Modal, title="💰 Comprar Robux"):
-    """Modal para iniciar compra."""
-
-    robux_amount = ui.TextInput(
-        label="Quantidade de Robux",
-        placeholder="Ex: 1000",
-        min_length=1,
-        max_length=10,
-        required=True,
-    )
-
-    roblox_username = ui.TextInput(
-        label="Seu usuário do Roblox",
-        placeholder="Ex: PlayerName123",
-        min_length=3,
-        max_length=50,
-        required=True,
-    )
-
-    def __init__(self, ticket_id: str):
-        super().__init__()
-        self.ticket_id = ticket_id
-
-    async def on_submit(self, interaction: discord.Interaction):
-        # Valida quantidade
-        try:
-            amount = int(self.robux_amount.value.replace(".", "").replace(",", ""))
-        except ValueError:
-            await interaction.response.send_message(
-                "❌ Quantidade inválida. Digite apenas números.", ephemeral=True
-            )
-            return
-
-        settings = get_settings()
-
-        if amount < settings.min_robux_amount:
-            await interaction.response.send_message(
-                f"❌ Mínimo de {settings.min_robux_amount} Robux.", ephemeral=True
-            )
-            return
-
-        if amount > settings.max_robux_amount:
-            await interaction.response.send_message(
-                f"❌ Máximo de {settings.max_robux_amount} Robux.", ephemeral=True
-            )
-            return
-
-        await interaction.response.defer()
-
-        # Processa a compra via OrdersCog
-        cog = interaction.client.get_cog("OrdersCog")
-        if cog:
-            await cog.process_order(
-                interaction, self.ticket_id, amount, self.roblox_username.value.strip()
-            )
 
 
 class CouponModal(ui.Modal, title="🎟️ Usar Cupom"):
@@ -443,6 +389,376 @@ class CouponModal(ui.Modal, title="🎟️ Usar Cupom"):
             )
 
         await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+class UsernameInputModal(ui.Modal, title="👤 Qual seu usuário Roblox?"):
+    """Modal para pedir username do Roblox."""
+
+    username = ui.TextInput(
+        label="Usuário do Roblox",
+        placeholder="Ex: PlayerName123",
+        min_length=3,
+        max_length=50,
+        required=True,
+    )
+
+    def __init__(self, ticket_id: str):
+        super().__init__()
+        self.ticket_id = ticket_id
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+
+        username = self.username.value.strip()
+
+        # Valida o usuário
+        valid, roblox_id, message = await roblox_api.validate_username(username)
+
+        if not valid:
+            embed = discord.Embed(
+                title="❌ Usuário não encontrado",
+                description=f"O usuário **{username}** não foi encontrado no Roblox.\n\n{message}",
+                color=discord.Color.red(),
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            return
+
+        # Busca a thumbnail
+        avatar_url = await roblox_api.get_user_avatar(roblox_id)
+
+        # Mostra confirmação com thumbnail
+        embed = discord.Embed(
+            title="👤 Confirmar Jogador",
+            description=f"**Usuário:** {username}\n**ID:** {roblox_id}",
+            color=discord.Color.blue(),
+        )
+
+        if avatar_url:
+            embed.set_thumbnail(url=avatar_url)
+
+        view = PlayerConfirmView(self.ticket_id, username, roblox_id, avatar_url)
+        await interaction.followup.send(embed=embed, view=view)
+
+
+class PlayerConfirmView(ui.View):
+    """View para confirmar o jogador selecionado."""
+
+    def __init__(self, ticket_id: str, username: str, roblox_id: int, avatar_url: str = None):
+        super().__init__(timeout=300)
+        self.ticket_id = ticket_id
+        self.username = username
+        self.roblox_id = roblox_id
+        self.avatar_url = avatar_url
+
+    @ui.button(label="✅ Confirmar Jogador", style=discord.ButtonStyle.green)
+    async def confirm_player(self, interaction: discord.Interaction, button: ui.Button):
+        """Confirma o jogador e prossegue para quantidade de robux."""
+        # Armazena o jogador selecionado
+        interaction.client.ticket_players = getattr(interaction.client, "ticket_players", {})
+        interaction.client.ticket_players[self.ticket_id] = {
+            "username": self.username,
+            "roblox_id": self.roblox_id,
+            "avatar_url": self.avatar_url,
+        }
+
+        # Abre modal para quantidade
+        modal = RobuxAmountModal(self.ticket_id, self.username, self.avatar_url)
+        await interaction.response.send_modal(modal)
+
+    @ui.button(label="❌ Cancelar", style=discord.ButtonStyle.red)
+    async def cancel_player(self, interaction: discord.Interaction, button: ui.Button):
+        """Cancela e volta."""
+        await interaction.response.defer()
+        await interaction.delete_original_response()
+
+
+class RobuxAmountModal(ui.Modal, title="💎 Quantidade de Robux"):
+    """Modal para pedir a quantidade de robux."""
+
+    robux_amount = ui.TextInput(
+        label="Quantidade de Robux",
+        placeholder="Ex: 1000",
+        min_length=1,
+        max_length=10,
+        required=True,
+    )
+
+    def __init__(self, ticket_id: str, username: str, avatar_url: str = None):
+        super().__init__()
+        self.ticket_id = ticket_id
+        self.username = username
+        self.avatar_url = avatar_url
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+
+        # Valida quantidade
+        try:
+            amount = int(self.robux_amount.value.replace(".", "").replace(",", ""))
+        except ValueError:
+            embed = discord.Embed(
+                title="❌ Quantidade inválida",
+                description="Digite apenas números.",
+                color=discord.Color.red(),
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            return
+
+        settings = get_settings()
+
+        # Valida limites
+        if amount < settings.min_robux_amount:
+            embed = discord.Embed(
+                title="❌ Quantidade mínima",
+                description=f"O mínimo é **{settings.min_robux_amount:,}** Robux.",
+                color=discord.Color.red(),
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            return
+
+        if amount > settings.max_robux_amount:
+            embed = discord.Embed(
+                title="❌ Quantidade máxima",
+                description=f"O máximo é **{settings.max_robux_amount:,}** Robux.",
+                color=discord.Color.red(),
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            return
+
+        # Calcula preço
+        final_price = settings.calculate_price(amount)
+
+        # Mostra resumo com confirmação
+        embed = discord.Embed(
+            title="📋 Resumo da Compra",
+            color=0x5865F2,
+        )
+
+        embed.add_field(
+            name="👤 Jogador",
+            value=f"```{self.username}```",
+            inline=True,
+        )
+        embed.add_field(
+            name="💎 Robux",
+            value=f"```{amount:,}```",
+            inline=True,
+        )
+        embed.add_field(
+            name="\u200b",
+            value="\u200b",
+            inline=False,
+        )
+        embed.add_field(
+            name="💵 Preço Total",
+            value=f"**R$ {final_price:.2f}**",
+            inline=True,
+        )
+
+        # Mostra preço unitário
+        price_per_1k = settings.price_per_1000_robux / 100
+        embed.add_field(
+            name="📊 Taxa",
+            value=f"R$ {price_per_1k:.2f} / 1.000 R$",
+            inline=True,
+        )
+
+        if self.avatar_url:
+            embed.set_thumbnail(url=self.avatar_url)
+
+        # Armazena dados para processamento
+        interaction.client.ticket_orders = getattr(interaction.client, "ticket_orders", {})
+        interaction.client.ticket_orders[self.ticket_id] = {
+            "username": self.username,
+            "roblox_id": interaction.client.ticket_players[self.ticket_id]["roblox_id"],
+            "amount": amount,
+            "price": final_price,
+            "avatar_url": self.avatar_url,
+        }
+
+        view = OrderConfirmView(self.ticket_id, amount, final_price)
+        await interaction.followup.send(embed=embed, view=view)
+
+
+class OrderConfirmView(ui.View):
+    """View para confirmar a compra final."""
+
+    def __init__(self, ticket_id: str, amount: int, price: float):
+        super().__init__(timeout=300)
+        self.ticket_id = ticket_id
+        self.amount = amount
+        self.price = price
+
+    @ui.button(label="✅ Confirmar Compra", style=discord.ButtonStyle.green)
+    async def confirm_order(self, interaction: discord.Interaction, button: ui.Button):
+        """Mostra opções de gateway de pagamento."""
+        settings = get_settings()
+
+        # Se apenas um gateway está disponível, usa direto
+        has_mercadopago = bool(settings.mercadopago_access_token)
+        has_paysync = bool(settings.paysync_api_key)
+
+        if has_mercadopago and not has_paysync:
+            # Usa Mercado Pago direto
+            await self._process_with_gateway(interaction, "mercadopago")
+        elif has_paysync and not has_mercadopago:
+            # Usa PaySync direto
+            await self._process_with_gateway(interaction, "paysync")
+        elif has_mercadopago and has_paysync:
+            # Mostra opções
+            await interaction.response.defer()
+            embed = discord.Embed(
+                title="💳 Escolha o Gateway de Pagamento",
+                description="Selecione qual método de pagamento você prefere:",
+                color=0x5865F2,
+            )
+            embed.add_field(
+                name="💰 Mercado Pago",
+                value="PIX instantâneo com o Mercado Pago",
+                inline=False,
+            )
+            embed.add_field(
+                name="🔐 PaySync",
+                value="PIX instantâneo com PaySync",
+                inline=False,
+            )
+
+            view = PaymentGatewayView(self.ticket_id)
+            await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+        else:
+            embed = discord.Embed(
+                title="❌ Erro",
+                description="Nenhum gateway de pagamento configurado.",
+                color=discord.Color.red(),
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    async def _process_with_gateway(
+        self, interaction: discord.Interaction, gateway: str
+    ) -> None:
+        """Processa a compra com o gateway especificado."""
+        await interaction.response.defer()
+
+        ticket_orders = getattr(interaction.client, "ticket_orders", {})
+        if self.ticket_id not in ticket_orders:
+            embed = discord.Embed(
+                title="❌ Erro",
+                description="Dados da compra não encontrados. Tente novamente.",
+                color=discord.Color.red(),
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            return
+
+        order_data = ticket_orders[self.ticket_id]
+
+        # Armazena gateway escolhido
+        interaction.client.ticket_gateways = getattr(
+            interaction.client, "ticket_gateways", {}
+        )
+        interaction.client.ticket_gateways[self.ticket_id] = gateway
+
+        # Processa a compra via OrdersCog
+        cog = interaction.client.get_cog("OrdersCog")
+        if cog:
+            await cog.process_order(
+                interaction,
+                self.ticket_id,
+                order_data["amount"],
+                order_data["username"],
+            )
+
+    @ui.button(label="❌ Cancelar", style=discord.ButtonStyle.red)
+    async def cancel_order(self, interaction: discord.Interaction, button: ui.Button):
+        """Cancela a compra."""
+        await interaction.response.defer()
+        embed = discord.Embed(
+            title="❌ Compra cancelada",
+            description="Você cancelou a compra. Clique em 'Iniciar Compra' novamente se desejar continuar.",
+            color=discord.Color.red(),
+        )
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+class PaymentGatewayView(ui.View):
+    """View para escolher gateway de pagamento."""
+
+    def __init__(self, ticket_id: str):
+        super().__init__(timeout=300)
+        self.ticket_id = ticket_id
+
+    @ui.button(
+        label="💰 Mercado Pago",
+        style=discord.ButtonStyle.blurple,
+    )
+    async def choose_mercadopago(
+        self, interaction: discord.Interaction, button: ui.Button
+    ):
+        """Escolhe Mercado Pago como gateway."""
+        await interaction.response.defer()
+
+        ticket_orders = getattr(interaction.client, "ticket_orders", {})
+        if self.ticket_id not in ticket_orders:
+            embed = discord.Embed(
+                title="❌ Erro",
+                description="Dados da compra não encontrados.",
+                color=discord.Color.red(),
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            return
+
+        order_data = ticket_orders[self.ticket_id]
+
+        # Armazena gateway escolhido
+        interaction.client.ticket_gateways = getattr(
+            interaction.client, "ticket_gateways", {}
+        )
+        interaction.client.ticket_gateways[self.ticket_id] = "mercadopago"
+
+        # Processa a compra
+        cog = interaction.client.get_cog("OrdersCog")
+        if cog:
+            await cog.process_order(
+                interaction,
+                self.ticket_id,
+                order_data["amount"],
+                order_data["username"],
+            )
+
+    @ui.button(
+        label="🔐 PaySync",
+        style=discord.ButtonStyle.green,
+    )
+    async def choose_paysync(self, interaction: discord.Interaction, button: ui.Button):
+        """Escolhe PaySync como gateway."""
+        await interaction.response.defer()
+
+        ticket_orders = getattr(interaction.client, "ticket_orders", {})
+        if self.ticket_id not in ticket_orders:
+            embed = discord.Embed(
+                title="❌ Erro",
+                description="Dados da compra não encontrados.",
+                color=discord.Color.red(),
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            return
+
+        order_data = ticket_orders[self.ticket_id]
+
+        # Armazena gateway escolhido
+        interaction.client.ticket_gateways = getattr(
+            interaction.client, "ticket_gateways", {}
+        )
+        interaction.client.ticket_gateways[self.ticket_id] = "paysync"
+
+        # Processa a compra
+        cog = interaction.client.get_cog("OrdersCog")
+        if cog:
+            await cog.process_order(
+                interaction,
+                self.ticket_id,
+                order_data["amount"],
+                order_data["username"],
+            )
 
 
 class ConfirmCloseView(ui.View):

@@ -26,15 +26,25 @@ class Settings(BaseSettings):
 
     # PostgreSQL
     database_url: str = Field(
-        default="postgresql+asyncpg://localhost:5432/robux_bot",
-        description="URL de conexão PostgreSQL",
+        default="sqlite+aiosqlite:///robux_bot.db",
+        description="URL de conexão do banco de dados (default: SQLite)",
     )
 
     # Mercado Pago
-    mercadopago_access_token: str = Field(
-        ..., description="Access token do Mercado Pago"
+    mercadopago_access_token: Optional[str] = Field(
+        default=None, description="Access token do Mercado Pago (opcional)"
     )
     mercadopago_webhook_secret: Optional[str] = Field(default=None)
+
+    # PaySync
+    paysync_api_key: Optional[str] = Field(
+        default=None, description="API key do PaySync (ps_live_ ou ps_test_)"
+    )
+
+    # Gateway padrão: "mercadopago" ou "paysync"
+    payment_gateway: str = Field(
+        default="mercadopago", description="Gateway de pagamento padrão"
+    )
 
     # Roblox
     roblox_cookie: str = Field(..., description="Cookie .ROBLOSECURITY")
@@ -60,6 +70,7 @@ class Settings(BaseSettings):
         env_file = ".env"
         env_file_encoding = "utf-8"
         case_sensitive = False
+        extra = "ignore"  # Ignora campos não definidos no .env
 
     @field_validator("roblox_cookie")
     @classmethod
@@ -77,6 +88,21 @@ class Settings(BaseSettings):
         """Valida formato do token do Discord."""
         if not v or len(v) < 50:
             raise ValueError("Token do Discord inválido")
+        return v
+
+    @field_validator("payment_gateway")
+    @classmethod
+    def validate_payment_gateway(cls, v: str, info) -> str:
+        """Valida se pelo menos um gateway de pagamento está configurado."""
+        mercadopago = info.data.get("mercadopago_access_token")
+        paysync = info.data.get("paysync_api_key")
+
+        if not mercadopago and not paysync:
+            raise ValueError(
+                "❌ Nenhum gateway de pagamento configurado! "
+                "Configure MERCADOPAGO_ACCESS_TOKEN ou PAYSYNC_API_KEY no .env"
+            )
+
         return v
 
     @property

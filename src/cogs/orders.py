@@ -20,7 +20,7 @@ from src.database import (
     TransactionRepository,
     LogRepository,
 )
-from src.services import mercadopago_service, roblox_api
+from src.services import mercadopago_service, paysync_service, roblox_api
 
 
 class OrdersCog(commands.Cog):
@@ -96,14 +96,28 @@ class OrdersCog(commands.Cog):
         # Vincula ao ticket
         await TicketRepository.link_order(ticket_id, order_id)
 
-        # Cria pagamento PIX
-        success, pix_data = await mercadopago_service.create_pix_payment(
-            amount=final_price,
-            order_id=order_id,
-            description=f"Compra de {robux_amount} Robux",
-            payer_email=f"user{interaction.user.id}@discord.com",
-            payer_name=str(interaction.user),
-        )
+        # Determina qual gateway usar
+        ticket_gateways = getattr(self.bot, "ticket_gateways", {})
+        gateway = ticket_gateways.get(ticket_id, settings.payment_gateway)
+
+        # Cria pagamento PIX com o gateway escolhido
+        if gateway == "paysync":
+            success, pix_data = await paysync_service.create_pix_charge(
+                amount_cents=int(final_price * 100),
+                order_id=order_id,
+                description=f"Compra de {robux_amount} Robux",
+                customer_email=f"user{interaction.user.id}@discord.com",
+                customer_name=str(interaction.user),
+            )
+        else:
+            # Usa Mercado Pago como padrão
+            success, pix_data = await mercadopago_service.create_pix_payment(
+                amount=final_price,
+                order_id=order_id,
+                description=f"Compra de {robux_amount} Robux",
+                payer_email=f"user{interaction.user.id}@discord.com",
+                payer_name=str(interaction.user),
+            )
 
         if not success:
             embed = discord.Embed(
@@ -120,18 +134,22 @@ class OrdersCog(commands.Cog):
             order_id,
             payment_id=pix_data["payment_id"],
             pix_code=pix_data["pix_code"],
-            pix_qrcode=pix_data.get("pix_qrcode_base64", ""),
+            pix_qrcode=pix_data.get("pix_qrcode_url", pix_data.get("pix_qrcode_base64", "")),
         )
 
         # Remove cupom do cache
         if ticket_id in ticket_coupons:
             del ticket_coupons[ticket_id]
 
+        # Armazena gateway usado no pedido
+        order_dict = await OrderRepository.get_by_id(order_id)
+        order_dict["gateway"] = gateway
+
         # Envia detalhes do pedido
-        await self._send_order_details(interaction.channel, order_dict, pix_data)
+        await self._send_order_details(interaction.channel, order_dict, pix_data, gateway)
 
         # Inicia monitoramento do pagamento
-        await self._start_payment_monitoring(order_id)
+        await self._start_payment_monitoring(order_id, gateway)
 
         # Log
         await LogRepository.log(
@@ -143,11 +161,12 @@ class OrdersCog(commands.Cog):
                 "price": final_price,
                 "roblox_user": roblox_username,
                 "coupon": coupon_code,
+                "gateway": gateway,
             },
         )
 
     async def _send_order_details(
-        self, channel: discord.TextChannel, order: dict, pix_data: dict
+        self, channel: discord.TextChannel, order: dict, pix_data: dict, gateway: str = "mercadopago"
     ) -> None:
         """Envia detalhes do pedido com QR Code - Design profissional."""
         settings = get_settings()
@@ -282,7 +301,7 @@ class OrdersCog(commands.Cog):
             view=view,
         )
 
-    async def _start_payment_monitoring(self, order_id: str) -> None:
+    async def _start_payment_monitoring(self, order_id: str, gateway: str = "mercadopago") -> None:
         """Inicia monitoramento de pagamento em background."""
 
         async def monitor():
@@ -296,15 +315,20 @@ class OrdersCog(commands.Cog):
                 if not order or order["status"] != OrderStatus.PENDING.value:
                     return
 
-                # Verifica status do pagamento
-                status, data = await mercadopago_service.check_payment_status(
-                    order["payment_id"]
-                )
+                # Verifica status do pagamento com o gateway correto
+                if gateway == "paysync":
+                    status, data = await paysync_service.check_payment_status(
+                        order["payment_id"]
+                    )
+                else:
+                    status, data = await mercadopago_service.check_payment_status(
+                        order["payment_id"]
+                    )
 
-                if status == "approved":
+                if status == "paid" or status == "approved":
                     await self._handle_payment_confirmed(order_id)
                     return
-                elif status in ["cancelled", "rejected"]:
+                elif status in ["cancelled", "rejected", "expired"]:
                     await OrderRepository.update_status(order_id, OrderStatus.CANCELLED)
                     return
 

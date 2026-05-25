@@ -108,6 +108,23 @@ class RobloxAPI:
             }
         return None
 
+    async def get_user_avatar(self, user_id: int) -> Optional[str]:
+        """Busca a thumbnail (avatar) do usuário."""
+        url = "https://thumbnails.roblox.com/v1/users/avatar"
+        params = {"userIds": [user_id], "size": "420x420", "format": "png"}
+
+        try:
+            session = await self._get_session()
+            async with session.get(url, params=params) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    if data.get("data"):
+                        return data["data"][0].get("imageUrl")
+        except Exception as e:
+            logger.error(f"❌ Erro ao buscar avatar do usuário {user_id}: {e}")
+
+        return None
+
     async def validate_username(self, username: str) -> Tuple[bool, Optional[int], str]:
         """
         Valida se um username existe.
