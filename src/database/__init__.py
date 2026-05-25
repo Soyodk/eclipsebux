@@ -9,6 +9,7 @@ from .models import (
     Transaction,
     Log,
     Gamepass,
+    BotConfig,
     OrderStatus,
     TicketStatus,
     PaymentMethod,
@@ -26,6 +27,7 @@ from .repositories import (
     TransactionRepository,
     LogRepository,
     GamepassRepository,
+    ConfigRepository,
 )
 
 __all__ = [
@@ -42,6 +44,7 @@ __all__ = [
     "Transaction",
     "Log",
     "Gamepass",
+    "BotConfig",
     # Enums
     "OrderStatus",
     "TicketStatus",
@@ -59,4 +62,5 @@ __all__ = [
     "TransactionRepository",
     "LogRepository",
     "GamepassRepository",
+    "ConfigRepository",
 ]

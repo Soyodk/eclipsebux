@@ -2,7 +2,7 @@ import discord
 from discord import ui
 from discord.ext import commands
 from loguru import logger
-from src.config import get_settings
+from src.config import get_settings, DynamicConfig
 from src.database import (
     TicketRepository,
     TicketStatus,
@@ -102,90 +102,92 @@ class TicketCreateButton(ui.View):
             ticket_id = await TicketRepository.create(ticket_data)
             logger.success(f"✅ Ticket salvo no banco: {ticket_id}")
 
-            # Envia mensagem de boas-vindas profissional
+            # Envia mensagem de boas-vindas (usa config dinâmica)
             settings = get_settings()
-            price_per_1k = settings.price_per_1000_robux / 100
+            price_cents = await DynamicConfig.price_per_1000()
+            price_per_1k = price_cents / 100
+            min_r = await DynamicConfig.min_robux()
+            max_r = await DynamicConfig.max_robux()
+            ticket_cfg = await DynamicConfig.ticket_embed()
 
-            # Banner/Header
-            header_embed = discord.Embed(
-                color=0x00D166,  # Verde vibrante
-            )
-            header_embed.set_image(url="https://i.imgur.com/8QXmZPR.png")  # Banner
+            embeds_to_send = []
+
+            # Banner (se configurado)
+            banner_url = ticket_cfg.get("banner_url", "")
+            if banner_url:
+                header_embed = discord.Embed(color=ticket_cfg.get("color", 0x5865F2))
+                header_embed.set_image(url=banner_url)
+                embeds_to_send.append(header_embed)
 
             # Embed principal de boas-vindas
+            desc = ticket_cfg.get(
+                "description",
+                "Olá {mention}! 👋\n\nEstamos felizes em te atender! Aqui você pode comprar Robux de forma **rápida**, **segura** e **automática**.",
+            ).replace("{mention}", interaction.user.mention)
+
             welcome_embed = discord.Embed(
-                title="<:robux:1234567890> Bem-vindo à Loja de Robux!",
-                description=(
-                    f"Olá {interaction.user.mention}! 👋\n\n"
-                    "Estamos felizes em te atender! Aqui você pode comprar Robux "
-                    "de forma **rápida**, **segura** e **automática**."
-                ),
-                color=0x5865F2,  # Blurple do Discord
+                title=ticket_cfg.get("title", "🛒 Bem-vindo à Loja de Robux!"),
+                description=desc,
+                color=ticket_cfg.get("color", 0x5865F2),
             )
             welcome_embed.set_thumbnail(url=interaction.user.display_avatar.url)
+            embeds_to_send.append(welcome_embed)
 
-            # Embed de preços
-            price_embed = discord.Embed(
-                title="💰 Tabela de Preços",
-                color=0xFEE75C,  # Amarelo
-            )
+            # Tabela de preços (configurável)
+            if ticket_cfg.get("show_price_table", True):
+                price_embed = discord.Embed(title="💰 Tabela de Preços", color=0xFEE75C)
+                examples = [100, 500, 1000, 2000, 5000, 10000]
+                price_table = ""
+                for robux in examples:
+                    p = robux * (price_cents / 100) / 1000
+                    price_table += f"**{robux:,}** R$ → `R$ {p:.2f}`\n"
+                price_embed.add_field(name="📊 Exemplos", value=price_table, inline=True)
+                price_embed.add_field(
+                    name="ℹ️ Informações",
+                    value=(
+                        f"💵 **R$ {price_per_1k:.2f}** / 1.000 R$\n"
+                        f"📉 Mínimo: **{min_r:,}** R$\n"
+                        f"📈 Máximo: **{max_r:,}** R$\n"
+                        "⚡ Entrega: **Instantânea**"
+                    ),
+                    inline=True,
+                )
+                embeds_to_send.append(price_embed)
 
-            # Calcula exemplos de preços
-            examples = [100, 500, 1000, 2000, 5000, 10000]
-            price_table = ""
-            for robux in examples:
-                price = settings.calculate_price(robux)
-                price_table += f"**{robux:,}** R$ → `R$ {price:.2f}`\n"
-
-            price_embed.add_field(
-                name="📊 Exemplos",
-                value=price_table,
-                inline=True,
-            )
-            price_embed.add_field(
-                name="ℹ️ Informações",
-                value=(
-                    f"💵 **R$ {price_per_1k:.2f}** / 1.000 R$\n"
-                    f"📉 Mínimo: **{settings.min_robux_amount:,}** R$\n"
-                    f"📈 Máximo: **{settings.max_robux_amount:,}** R$\n"
-                    "⚡ Entrega: **Instantânea**"
-                ),
-                inline=True,
-            )
-
-            # Embed de como funciona
-            steps_embed = discord.Embed(
-                title="📋 Como Funciona?",
-                description=(
-                    "```\n"
-                    "1️⃣ Clique em 'Iniciar Compra'\n"
-                    "2️⃣ Informe quantidade e seu usuário Roblox\n"
-                    "3️⃣ Pague o PIX gerado\n"
-                    "4️⃣ Crie um Gamepass no valor indicado\n"
-                    "5️⃣ Envie o link e receba seus Robux!\n"
-                    "```"
-                ),
-                color=0x5865F2,
-            )
-            steps_embed.add_field(
-                name="🔒 Segurança Garantida",
-                value=(
-                    "• Método oficial via Gamepass\n"
-                    "• Não pedimos senha ou cookie\n"
-                    "• Pagamento seguro via PIX\n"
-                    "• Entrega verificada automaticamente"
-                ),
-                inline=False,
-            )
-            steps_embed.set_footer(
-                text=f"🎫 Ticket #{ticket_id} • Atendimento 24/7",
-                icon_url=interaction.guild.icon.url if interaction.guild.icon else None,
-            )
+            # Passos de compra (configurável)
+            if ticket_cfg.get("show_steps", True):
+                steps_embed = discord.Embed(
+                    title="📋 Como Funciona?",
+                    description=(
+                        "```\n"
+                        "1️⃣ Clique em 'Iniciar Compra'\n"
+                        "2️⃣ Informe quantidade e seu usuário Roblox\n"
+                        "3️⃣ Pague o PIX gerado\n"
+                        "4️⃣ Crie um Gamepass no valor indicado\n"
+                        "5️⃣ Envie o link e receba seus Robux!\n"
+                        "```"
+                    ),
+                    color=ticket_cfg.get("color", 0x5865F2),
+                )
+                steps_embed.add_field(
+                    name="🔒 Segurança Garantida",
+                    value=(
+                        "• Método oficial via Gamepass\n"
+                        "• Não pedimos senha ou cookie\n"
+                        "• Pagamento seguro via PIX\n"
+                        "• Entrega verificada automaticamente"
+                    ),
+                    inline=False,
+                )
+                footer_text = ticket_cfg.get("footer", "Atendimento 24/7")
+                steps_embed.set_footer(
+                    text=f"🎫 Ticket #{ticket_id} • {footer_text}",
+                    icon_url=interaction.guild.icon.url if interaction.guild.icon else None,
+                )
+                embeds_to_send.append(steps_embed)
 
             view = TicketActionsView()
-            await channel.send(
-                embeds=[welcome_embed, price_embed, steps_embed], view=view
-            )
+            await channel.send(embeds=embeds_to_send, view=view)
             logger.success(f"✅ Mensagem inicial enviada no ticket {ticket_id}")
 
             await interaction.followup.send(
@@ -369,17 +371,18 @@ class BuyRobuxModal(ui.Modal, title="💰 Comprar Robux"):
             )
             return
 
-        settings = get_settings()
+        min_r = await DynamicConfig.min_robux()
+        max_r = await DynamicConfig.max_robux()
 
-        if amount < settings.min_robux_amount:
+        if amount < min_r:
             await interaction.response.send_message(
-                f"❌ Mínimo de {settings.min_robux_amount} Robux.", ephemeral=True
+                f"❌ Mínimo de {min_r:,} Robux.", ephemeral=True
             )
             return
 
-        if amount > settings.max_robux_amount:
+        if amount > max_r:
             await interaction.response.send_message(
-                f"❌ Máximo de {settings.max_robux_amount} Robux.", ephemeral=True
+                f"❌ Máximo de {max_r:,} Robux.", ephemeral=True
             )
             return
 
@@ -500,10 +503,11 @@ class ConfirmCloseView(ui.View):
 
 
 async def setup_ticket_panel(bot: commands.Bot) -> None:
-    """Configura o painel de tickets profissional."""
+    """Configura o painel de tickets (usa config dinâmica)."""
     settings = get_settings()
 
-    channel = bot.get_channel(settings.channel_vendas_id)
+    vendas_id = await DynamicConfig.channel_vendas_id() or settings.channel_vendas_id
+    channel = bot.get_channel(vendas_id)
     if not channel:
         logger.warning("⚠️ Canal de vendas não encontrado")
         return
@@ -512,91 +516,77 @@ async def setup_ticket_panel(bot: commands.Bot) -> None:
     async for message in channel.history(limit=10):
         if message.author == bot.user and message.embeds:
             for embed in message.embeds:
-                if embed.title and "Loja" in embed.title:
-                    # Adiciona view persistente
+                if embed.title and ("Loja" in embed.title or "loja" in embed.title):
                     view = TicketCreateButton()
                     await message.edit(view=view)
                     logger.info("✅ Painel de tickets atualizado")
                     return
 
-    # Calcula preço para exibição
-    price_per_1k = settings.price_per_1000_robux / 100
+    # Carrega configurações dinâmicas da embed
+    shop_cfg = await DynamicConfig.shop_embed()
+    price_cents = await DynamicConfig.price_per_1000()
+    price_per_1k = price_cents / 100
+    color = shop_cfg.get("color", 0x00D166)
 
-    # ═══════════════════════════════════════════════════════════
-    # EMBED 1: Header/Banner
-    # ═══════════════════════════════════════════════════════════
-    banner_embed = discord.Embed(color=0x5865F2)
-    banner_embed.set_image(url="https://i.imgur.com/KRK5Fz0.png")  # Banner da loja
+    embeds_to_send = []
 
-    # ═══════════════════════════════════════════════════════════
-    # EMBED 2: Informações Principais
-    # ═══════════════════════════════════════════════════════════
+    # Banner (se configurado)
+    banner_url = shop_cfg.get("banner_url", "")
+    if banner_url:
+        banner_embed = discord.Embed(color=color)
+        banner_embed.set_image(url=banner_url)
+        embeds_to_send.append(banner_embed)
+
+    # Embed principal
     main_embed = discord.Embed(
-        title="<:robux:1234567890> Loja Oficial de Robux",
-        description=(
-            "Compre Robux de forma **rápida**, **segura** e com\n"
-            "**entrega automática** via Gamepass!\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        title=shop_cfg.get("title", "🏪 Loja Oficial de Robux"),
+        description=shop_cfg.get(
+            "description",
+            "Compre Robux de forma **rápida**, **segura** e com\n**entrega automática** via Gamepass!\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
         ),
-        color=0x00D166,
+        color=color,
     )
+    if shop_cfg.get("thumbnail_url"):
+        main_embed.set_thumbnail(url=shop_cfg["thumbnail_url"])
 
-    main_embed.add_field(
-        name="💰 Preço",
-        value=f"**R$ {price_per_1k:.2f}** / 1.000 R$",
-        inline=True,
-    )
-    main_embed.add_field(
-        name="⚡ Entrega",
-        value="**Instantânea**",
-        inline=True,
-    )
-    main_embed.add_field(
-        name="💳 Pagamento",
-        value="**PIX**",
-        inline=True,
-    )
+    main_embed.add_field(name="💰 Preço", value=f"**R$ {price_per_1k:.2f}** / 1.000 R$", inline=True)
+    main_embed.add_field(name="⚡ Entrega", value="**Instantânea**", inline=True)
+    main_embed.add_field(name="💳 Pagamento", value="**PIX**", inline=True)
 
-    # ═══════════════════════════════════════════════════════════
-    # EMBED 3: Vantagens
-    # ═══════════════════════════════════════════════════════════
-    features_embed = discord.Embed(
-        title="✨ Por que comprar conosco?",
-        color=0x5865F2,
-    )
-    features_embed.add_field(
-        name="🔒 100% Seguro",
-        value="Método oficial via Gamepass\nNão pedimos senha",
-        inline=True,
-    )
-    features_embed.add_field(
-        name="🤖 Automático",
-        value="Sistema 100% automatizado\nSem esperar atendente",
-        inline=True,
-    )
-    features_embed.add_field(
-        name="💎 Melhor Preço",
-        value="Valores competitivos\nDescontos com cupom",
-        inline=True,
-    )
+    # Estoque visível
+    if await DynamicConfig.robux_stock_display():
+        try:
+            from src.services import roblox_api
+            balance = await roblox_api.get_my_robux_balance()
+            if balance is not None:
+                main_embed.add_field(
+                    name="💎 Estoque",
+                    value=f"**{balance:,} R$** disponíveis",
+                    inline=True,
+                )
+        except Exception:
+            pass
 
-    # ═══════════════════════════════════════════════════════════
-    # EMBED 4: Call to Action
-    # ═══════════════════════════════════════════════════════════
+    embeds_to_send.append(main_embed)
+
+    # Vantagens
+    features_embed = discord.Embed(title="✨ Por que comprar conosco?", color=color)
+    features_embed.add_field(name="🔒 100% Seguro", value="Método oficial via Gamepass\nNão pedimos senha", inline=True)
+    features_embed.add_field(name="🤖 Automático", value="Sistema 100% automatizado\nSem esperar atendente", inline=True)
+    features_embed.add_field(name="💎 Melhor Preço", value="Valores competitivos\nDescontos com cupom", inline=True)
+    embeds_to_send.append(features_embed)
+
+    # CTA
     cta_embed = discord.Embed(
-        description=(
-            "```\n" "🛒 Clique no botão abaixo para iniciar sua compra!\n" "```"
-        ),
+        description="```\n🛒 Clique no botão abaixo para iniciar sua compra!\n```",
         color=0xFEE75C,
     )
-    cta_embed.set_footer(
-        text="🕐 Atendimento 24/7 • ⭐ +1000 clientes satisfeitos",
-    )
+    footer_text = shop_cfg.get("footer", "🕐 Atendimento 24/7 • ⭐ +1000 clientes satisfeitos")
+    cta_embed.set_footer(text=footer_text)
+    embeds_to_send.append(cta_embed)
 
     view = TicketCreateButton()
-    await channel.send(
-        embeds=[banner_embed, main_embed, features_embed, cta_embed], view=view
-    )
+    await channel.send(embeds=embeds_to_send, view=view)
     logger.success("✅ Painel de tickets criado")
 
 

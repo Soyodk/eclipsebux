@@ -317,6 +317,28 @@ class Log(Base):
         }
 
 
+class BotConfig(Base):
+    """Configurações dinâmicas do bot (chave-valor)."""
+
+    __tablename__ = "bot_config"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    key: Mapped[str] = mapped_column(String(100), unique=True, nullable=False, index=True)
+    value: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    updated_by: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+
+    def to_dict(self) -> dict:
+        return {
+            "key": self.key,
+            "value": self.value,
+            "updated_by": self.updated_by,
+            "updated_at": self.updated_at,
+        }
+
+
 class Gamepass(Base):
     """Modelo de gamepass criado."""
 

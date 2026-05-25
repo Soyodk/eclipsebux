@@ -8,7 +8,7 @@ from loguru import logger
 # Adiciona src ao path
 sys.path.insert(0, str(Path(__file__).parent))
 
-from src.config import get_settings
+from src.config import get_settings, DynamicConfig
 from src.database import db
 from src.services import roblox_api
 from src.cogs.tickets import TicketCreateButton, setup_ticket_panel
@@ -35,6 +35,9 @@ class RobuxBot(commands.Bot):
         # Conecta ao PostgreSQL
         await db.connect(self.settings.database_url)
 
+        # Carrega configurações dinâmicas do banco
+        await DynamicConfig.load()
+
         # Valida cookie do Roblox
         valid, message = await roblox_api.validate_cookie()
         if valid:
@@ -58,6 +61,7 @@ class RobuxBot(commands.Bot):
             "src.cogs.admin",
             "src.cogs.user",
             "src.cogs.tickets",
+            "src.cogs.config",
         ]
 
         for cog in cogs:

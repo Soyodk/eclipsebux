@@ -562,6 +562,61 @@ class LogRepository:
             return [log_item.to_dict() for log_item in logs]
 
 
+class ConfigRepository:
+    """Repositório de configurações dinâmicas do bot."""
+
+    @staticmethod
+    async def get(key: str):
+        """Busca valor de uma configuração."""
+        from .models import BotConfig
+        async with db.get_session() as session:
+            result = await session.execute(
+                select(BotConfig).where(BotConfig.key == key)
+            )
+            row = result.scalar_one_or_none()
+            return row.value if row else None
+
+    @staticmethod
+    async def set(key: str, value, updated_by: int = None) -> None:
+        """Define ou atualiza uma configuração."""
+        from .models import BotConfig
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+        async with db.get_session() as session:
+            result = await session.execute(
+                select(BotConfig).where(BotConfig.key == key)
+            )
+            row = result.scalar_one_or_none()
+            if row:
+                row.value = value
+                row.updated_by = updated_by
+                row.updated_at = datetime.now(timezone.utc)
+            else:
+                row = BotConfig(key=key, value=value, updated_by=updated_by)
+                session.add(row)
+            await session.commit()
+
+    @staticmethod
+    async def get_all() -> Dict[str, Any]:
+        """Retorna todas as configurações como dicionário."""
+        from .models import BotConfig
+        async with db.get_session() as session:
+            result = await session.execute(select(BotConfig))
+            rows = result.scalars().all()
+            return {row.key: row.value for row in rows}
+
+    @staticmethod
+    async def delete(key: str) -> bool:
+        """Remove uma configuração."""
+        from .models import BotConfig
+        from sqlalchemy import delete
+        async with db.get_session() as session:
+            result = await session.execute(
+                delete(BotConfig).where(BotConfig.key == key)
+            )
+            await session.commit()
+            return result.rowcount > 0
+
+
 class GamepassRepository:
     """Repositório de operações com gamepasses."""
 
