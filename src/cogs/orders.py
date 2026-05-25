@@ -36,34 +36,40 @@ class OrdersCog(commands.Cog):
         ticket_id: str,
         robux_amount: int,
         roblox_username: str,
+        roblox_id: int = None,
+        coupon: dict = None,
     ) -> None:
-        """Processa um novo pedido."""
+        """Processa um novo pedido (modo auto/semi_auto)."""
         settings = get_settings()
 
-        # Valida usuário Roblox
-        valid, roblox_id, message = await roblox_api.validate_username(roblox_username)
-
-        if not valid:
-            embed = discord.Embed(
-                title="❌ Usuário Inválido",
-                description=f"O usuário **{roblox_username}** não foi encontrado no Roblox.\n\n{message}",
-                color=discord.Color.red(),
-            )
-            await interaction.followup.send(embed=embed)
-            return
+        # Valida usuário Roblox apenas se roblox_id não for passado
+        if roblox_id is None:
+            valid, roblox_id, message = await roblox_api.validate_username(roblox_username)
+            if not valid:
+                embed = discord.Embed(
+                    title="❌ Usuário Inválido",
+                    description=f"O usuário **{roblox_username}** não foi encontrado no Roblox.\n\n{message}",
+                    color=discord.Color.red(),
+                )
+                await interaction.followup.send(embed=embed)
+                return
 
         # Calcula preço
         base_price = settings.calculate_price(robux_amount)
 
-        # Verifica cupom
+        # Verifica cupom (prioridade: coupon passado diretamente > bot.ticket_coupons)
         coupon_code = None
         discount_percent = 0.0
 
-        ticket_coupons = getattr(self.bot, "ticket_coupons", {})
-        if ticket_id in ticket_coupons:
-            coupon_data = ticket_coupons[ticket_id]
-            coupon_code = coupon_data["code"]
-            discount_percent = coupon_data["discount"]
+        if coupon:
+            coupon_code = coupon.get("code")
+            discount_percent = coupon.get("discount", 0.0)
+        else:
+            ticket_coupons = getattr(self.bot, "ticket_coupons", {})
+            if ticket_id in ticket_coupons:
+                coupon_data = ticket_coupons[ticket_id]
+                coupon_code = coupon_data["code"]
+                discount_percent = coupon_data["discount"]
 
         # Aplica desconto
         discount_value = base_price * discount_percent
@@ -124,6 +130,7 @@ class OrdersCog(commands.Cog):
         )
 
         # Remove cupom do cache
+        ticket_coupons = getattr(self.bot, "ticket_coupons", {})
         if ticket_id in ticket_coupons:
             del ticket_coupons[ticket_id]
 
@@ -144,6 +151,119 @@ class OrdersCog(commands.Cog):
                 "roblox_user": roblox_username,
                 "coupon": coupon_code,
             },
+        )
+
+    async def process_manual_order(
+        self,
+        interaction: discord.Interaction,
+        ticket_id: str,
+        robux_amount: int,
+        roblox_username: str,
+        roblox_id: int,
+        coupon: dict = None,
+    ) -> None:
+        """Processa pedido em modo manual: mostra chave Pix e aguarda comprovante."""
+        from src.config.dynamic_config import DynamicConfig
+
+        settings = get_settings()
+        base_price = settings.calculate_price(robux_amount)
+
+        coupon_code = None
+        discount_percent = 0.0
+        if coupon:
+            coupon_code = coupon.get("code")
+            discount_percent = coupon.get("discount", 0.0)
+
+        final_price = base_price * (1 - discount_percent)
+        gamepass_price = settings.calculate_gamepass_price(robux_amount)
+
+        await UserRepository.get_or_create(interaction.user.id, str(interaction.user))
+
+        order = OrderCreate(
+            user_id=interaction.user.id,
+            roblox_username=roblox_username,
+            roblox_id=roblox_id,
+            robux_amount=robux_amount,
+            price_brl=final_price,
+            gamepass_price=gamepass_price,
+            coupon_code=coupon_code,
+            discount_percent=discount_percent,
+            ticket_channel_id=interaction.channel.id,
+            expires_at=datetime.now(timezone.utc)
+            + timedelta(minutes=settings.pix_expiration_minutes),
+        )
+
+        order_id = await OrderRepository.create(order)
+        await TicketRepository.link_order(ticket_id, order_id)
+
+        # Remove cupom do cache
+        ticket_coupons = getattr(self.bot, "ticket_coupons", {})
+        if ticket_id in ticket_coupons:
+            del ticket_coupons[ticket_id]
+
+        # Busca chave Pix configurada
+        pix_key = await DynamicConfig.get("manual_pix_key") or "❌ Não configurada (use /config)"
+        pix_key_type = await DynamicConfig.get("manual_pix_key_type") or "Chave"
+
+        # Embed com instrução de pagamento
+        order_embed = discord.Embed(
+            title="🧾 Resumo do Pedido",
+            color=0x5865F2,
+        )
+        order_embed.description = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        order_embed.add_field(name="🔢 Pedido", value=f"```{order_id}```", inline=True)
+        order_embed.add_field(name="👤 Roblox", value=f"```{roblox_username}```", inline=True)
+        order_embed.add_field(name="\u200b", value="\u200b", inline=True)
+        order_embed.add_field(name="💎 Quantidade", value=f"**{robux_amount:,}** Robux", inline=True)
+        if discount_percent > 0:
+            order_embed.add_field(
+                name="💵 Valor",
+                value=f"~~R$ {base_price:.2f}~~ → **R$ {final_price:.2f}**\n`{coupon_code}` (-{discount_percent*100:.0f}%)",
+                inline=True,
+            )
+        else:
+            order_embed.add_field(name="💵 Valor", value=f"**R$ {final_price:.2f}**", inline=True)
+
+        pix_embed = discord.Embed(
+            title="💳 Dados para Pagamento (PIX Manual)",
+            color=0x00D166,
+        )
+        pix_embed.add_field(name=f"🔑 {pix_key_type}", value=f"```{pix_key}```", inline=False)
+        pix_embed.add_field(
+            name="💰 Valor a Pagar",
+            value=f"**R$ {final_price:.2f}**",
+            inline=True,
+        )
+        pix_embed.add_field(
+            name="📋 Referência",
+            value=f"`{order_id}`",
+            inline=True,
+        )
+
+        instructions_embed = discord.Embed(
+            title="📸 Como Enviar o Comprovante",
+            description=(
+                "**1.** Faça o pagamento via PIX para a chave acima\n"
+                "**2.** Tire um **print/screenshot** do comprovante\n"
+                "**3.** **Envie a imagem aqui** neste ticket\n"
+                "**4.** Clique no botão **📸 Já Enviei o Comprovante** abaixo\n\n"
+                "Um administrador irá confirmar o pagamento em breve."
+            ),
+            color=0xFEE75C,
+        )
+        instructions_embed.set_footer(text="⚠️ Não feche o ticket antes da confirmação.")
+
+        await interaction.channel.send(
+            content=f"<@{interaction.user.id}>",
+            embeds=[order_embed, pix_embed, instructions_embed],
+            view=ManualPaymentView(order_id),
+        )
+
+        await LogRepository.log(
+            action="manual_order_created",
+            user_id=interaction.user.id,
+            order_id=order_id,
+            details={"robux": robux_amount, "price": final_price, "roblox_user": roblox_username},
         )
 
     async def _send_order_details(
@@ -538,6 +658,235 @@ class OrdersCog(commands.Cog):
             )
 
         await log_channel.send(embed=embed)
+
+
+class ManualPaymentView(ui.View):
+    """View do pagamento manual — aguarda comprovante do usuário."""
+
+    def __init__(self, order_id: str = ""):
+        super().__init__(timeout=None)
+        self.order_id = order_id
+
+    @ui.button(
+        label="📸 Já Enviei o Comprovante",
+        style=discord.ButtonStyle.green,
+        custom_id="manual:sent_proof",
+    )
+    async def sent_proof(self, interaction: discord.Interaction, button: ui.Button):
+        """Usuário clica após enviar a imagem do comprovante no canal."""
+        ticket = await TicketRepository.get_by_channel(interaction.channel.id)
+        if not ticket:
+            await interaction.response.send_message("❌ Ticket não encontrado.", ephemeral=True)
+            return
+
+        order = await OrderRepository.get_by_id(ticket.get("order_id") or self.order_id)
+        if not order:
+            await interaction.response.send_message("❌ Pedido não encontrado.", ephemeral=True)
+            return
+
+        if order["user_id"] != interaction.user.id:
+            await interaction.response.send_message(
+                "❌ Apenas o comprador pode confirmar o comprovante.", ephemeral=True
+            )
+            return
+
+        if order["status"] != OrderStatus.PENDING.value:
+            await interaction.response.send_message(
+                "⚠️ Este pedido já foi processado.", ephemeral=True
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        # Procura a imagem mais recente no canal enviada pelo usuário
+        proof_url = None
+        proof_filename = None
+        async for msg in interaction.channel.history(limit=20):
+            if msg.author.id == interaction.user.id and msg.attachments:
+                att = msg.attachments[0]
+                if any(att.filename.lower().endswith(ext) for ext in [".png", ".jpg", ".jpeg", ".gif", ".webp"]):
+                    proof_url = att.url
+                    proof_filename = att.filename
+                    break
+
+        if not proof_url:
+            await interaction.followup.send(
+                "❌ **Comprovante não encontrado!**\n\n"
+                "Por favor:\n"
+                "1. Envie a **imagem do comprovante** aqui no ticket\n"
+                "2. Depois clique no botão novamente.",
+                ephemeral=True,
+            )
+            return
+
+        settings = get_settings()
+        log_channel = interaction.client.get_channel(settings.channel_logs_id)
+
+        if not log_channel:
+            await interaction.followup.send(
+                "⚠️ Canal de logs não configurado. Chame um administrador.", ephemeral=True
+            )
+            return
+
+        # Envia para o canal de logs para admin confirmar
+        proof_embed = discord.Embed(
+            title="📸 Comprovante de Pagamento — Aguardando Confirmação",
+            color=0xFEE75C,
+            timestamp=datetime.now(timezone.utc),
+        )
+        proof_embed.add_field(name="🔢 Pedido", value=f"`{order['order_id']}`", inline=True)
+        proof_embed.add_field(name="👤 Usuário", value=f"<@{order['user_id']}>", inline=True)
+        proof_embed.add_field(name="💵 Valor", value=f"R$ {order['price_brl']:.2f}", inline=True)
+        proof_embed.add_field(name="💎 Robux", value=f"{order['robux_amount']:,}", inline=True)
+        proof_embed.add_field(name="🎮 Roblox", value=f"`{order['roblox_username']}`", inline=True)
+        proof_embed.add_field(name="🖼️ Comprovante", value=f"[Ver imagem]({proof_url})", inline=True)
+        proof_embed.set_image(url=proof_url)
+        proof_embed.set_footer(text=f"Canal: #{interaction.channel.name}")
+
+        await log_channel.send(
+            content="🔔 **Novo comprovante aguardando confirmação!**",
+            embed=proof_embed,
+            view=AdminProofConfirmView(order["order_id"], interaction.channel.id),
+        )
+
+        # Notifica o usuário
+        await interaction.followup.send(
+            "✅ **Comprovante recebido!**\n\n"
+            "Um administrador irá verificar e confirmar seu pagamento em breve.\n"
+            "Aguarde neste ticket.",
+            ephemeral=True,
+        )
+
+        # Atualiza a mensagem no ticket
+        confirm_embed = discord.Embed(
+            title="⏳ Comprovante Enviado — Aguardando Confirmação",
+            description=(
+                f"<@{interaction.user.id}> seu comprovante foi recebido!\n\n"
+                "Um **administrador** irá verificar e confirmar o pagamento.\n"
+                "Aguarde aqui no ticket."
+            ),
+            color=0xFEE75C,
+        )
+        confirm_embed.set_footer(text="Não feche o ticket até a confirmação.")
+        await interaction.channel.send(embed=confirm_embed)
+
+    @ui.button(
+        label="❌ Cancelar Pedido",
+        style=discord.ButtonStyle.danger,
+        custom_id="manual:cancel_order",
+    )
+    async def cancel_order(self, interaction: discord.Interaction, button: ui.Button):
+        ticket = await TicketRepository.get_by_channel(interaction.channel.id)
+        if not ticket:
+            await interaction.response.send_message("❌ Ticket não encontrado.", ephemeral=True)
+            return
+
+        order = await OrderRepository.get_by_id(ticket.get("order_id") or self.order_id)
+        if not order or order["user_id"] != interaction.user.id:
+            await interaction.response.send_message("❌ Sem permissão.", ephemeral=True)
+            return
+
+        if order["status"] != OrderStatus.PENDING.value:
+            await interaction.response.send_message("⚠️ Este pedido já foi processado.", ephemeral=True)
+            return
+
+        await OrderRepository.update_status(order["order_id"], OrderStatus.CANCELLED)
+        embed = discord.Embed(
+            title="❌ Pedido Cancelado",
+            description="Seu pedido foi cancelado. Você pode iniciar uma nova compra.",
+            color=discord.Color.red(),
+        )
+        await interaction.response.send_message(embed=embed)
+
+
+class AdminProofConfirmView(ui.View):
+    """View para admin confirmar ou rejeitar comprovante de pagamento manual."""
+
+    def __init__(self, order_id: str = "", ticket_channel_id: int = 0):
+        super().__init__(timeout=None)
+        self.order_id = order_id
+        self.ticket_channel_id = ticket_channel_id
+
+    @ui.button(label="✅ Confirmar Pagamento", style=discord.ButtonStyle.green, custom_id="admin:confirm_proof")
+    async def confirm(self, interaction: discord.Interaction, button: ui.Button):
+        """Admin confirma o pagamento."""
+        settings = get_settings()
+        is_admin = any(r.id == settings.role_admin_id for r in interaction.user.roles)
+        if not is_admin:
+            await interaction.response.send_message("❌ Apenas administradores.", ephemeral=True)
+            return
+
+        order = await OrderRepository.get_by_id(self.order_id)
+        if not order:
+            await interaction.response.send_message("❌ Pedido não encontrado.", ephemeral=True)
+            return
+
+        if order["status"] != OrderStatus.PENDING.value:
+            await interaction.response.send_message(
+                f"⚠️ Pedido já está com status: `{order['status']}`", ephemeral=True
+            )
+            return
+
+        await interaction.response.defer()
+
+        # Chama o handler de pagamento confirmado
+        cog = interaction.client.get_cog("OrdersCog")
+        if cog:
+            await cog._handle_payment_confirmed(self.order_id)
+
+        # Edita a mensagem no canal de logs
+        confirmed_embed = discord.Embed(
+            title="✅ Pagamento Confirmado pelo Admin",
+            color=0x00D166,
+            timestamp=datetime.now(timezone.utc),
+        )
+        confirmed_embed.add_field(name="🔢 Pedido", value=f"`{self.order_id}`", inline=True)
+        confirmed_embed.add_field(name="✅ Confirmado por", value=interaction.user.mention, inline=True)
+        await interaction.message.edit(embed=confirmed_embed, view=None)
+
+    @ui.button(label="❌ Rejeitar", style=discord.ButtonStyle.danger, custom_id="admin:reject_proof")
+    async def reject(self, interaction: discord.Interaction, button: ui.Button):
+        """Admin rejeita o comprovante."""
+        settings = get_settings()
+        is_admin = any(r.id == settings.role_admin_id for r in interaction.user.roles)
+        if not is_admin:
+            await interaction.response.send_message("❌ Apenas administradores.", ephemeral=True)
+            return
+
+        order = await OrderRepository.get_by_id(self.order_id)
+        if not order:
+            await interaction.response.send_message("❌ Pedido não encontrado.", ephemeral=True)
+            return
+
+        await interaction.response.defer()
+        await OrderRepository.update_status(self.order_id, OrderStatus.CANCELLED)
+
+        # Notifica no ticket
+        channel = interaction.client.get_channel(self.ticket_channel_id)
+        if channel:
+            reject_embed = discord.Embed(
+                title="❌ Comprovante Rejeitado",
+                description=(
+                    f"<@{order['user_id']}> seu comprovante foi **rejeitado** pelo administrador.\n\n"
+                    "**Possíveis motivos:**\n"
+                    "• Imagem ilegível ou inválida\n"
+                    "• Valor incorreto\n"
+                    "• Comprovante não corresponde ao pedido\n\n"
+                    "Contate um administrador para mais informações."
+                ),
+                color=discord.Color.red(),
+            )
+            await channel.send(embed=reject_embed)
+
+        # Edita a mensagem no canal de logs
+        rejected_embed = discord.Embed(
+            title="❌ Comprovante Rejeitado pelo Admin",
+            color=discord.Color.red(),
+            timestamp=datetime.now(timezone.utc),
+        )
+        rejected_embed.add_field(name="🔢 Pedido", value=f"`{self.order_id}`", inline=True)
+        rejected_embed.add_field(name="❌ Rejeitado por", value=interaction.user.mention, inline=True)
+        await interaction.message.edit(embed=rejected_embed, view=None)
 
 
 class OrderActionsView(ui.View):

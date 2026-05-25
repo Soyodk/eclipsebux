@@ -241,8 +241,7 @@ class TicketActionsView(ui.View):
         row=0,
     )
     async def start_buy(self, interaction: discord.Interaction, button: ui.Button):
-        """Abre modal para iniciar compra."""
-        # Busca ticket pelo canal
+        """Abre modal para iniciar compra (Passo 1: quantidade)."""
         ticket = await TicketRepository.get_by_channel(interaction.channel.id)
         if not ticket:
             await interaction.response.send_message(
@@ -250,7 +249,7 @@ class TicketActionsView(ui.View):
             )
             return
 
-        modal = BuyRobuxModal(ticket["ticket_id"])
+        modal = AmountModal(ticket["ticket_id"])
         await interaction.response.send_modal(modal)
 
     @ui.button(
@@ -338,8 +337,8 @@ class TicketActionsView(ui.View):
         )
 
 
-class BuyRobuxModal(ui.Modal, title="💰 Comprar Robux"):
-    """Modal para iniciar compra."""
+class AmountModal(ui.Modal, title="💰 Quantos Robux?"):
+    """Passo 1: pede apenas a quantidade de Robux."""
 
     robux_amount = ui.TextInput(
         label="Quantidade de Robux",
@@ -349,20 +348,11 @@ class BuyRobuxModal(ui.Modal, title="💰 Comprar Robux"):
         required=True,
     )
 
-    roblox_username = ui.TextInput(
-        label="Seu usuário do Roblox",
-        placeholder="Ex: PlayerName123",
-        min_length=3,
-        max_length=50,
-        required=True,
-    )
-
     def __init__(self, ticket_id: str):
         super().__init__()
         self.ticket_id = ticket_id
 
     async def on_submit(self, interaction: discord.Interaction):
-        # Valida quantidade
         try:
             amount = int(self.robux_amount.value.replace(".", "").replace(",", ""))
         except ValueError:
@@ -371,29 +361,205 @@ class BuyRobuxModal(ui.Modal, title="💰 Comprar Robux"):
             )
             return
 
+        await interaction.response.defer()
+
         min_r = await DynamicConfig.min_robux()
         max_r = await DynamicConfig.max_robux()
+        price_cents = await DynamicConfig.price_per_1000()
 
         if amount < min_r:
+            await interaction.followup.send(f"❌ Mínimo de {min_r:,} Robux.", ephemeral=True)
+            return
+        if amount > max_r:
+            await interaction.followup.send(f"❌ Máximo de {max_r:,} Robux.", ephemeral=True)
+            return
+
+        base_price = amount * (price_cents / 100) / 1000
+
+        ticket_coupons = getattr(interaction.client, "ticket_coupons", {})
+        coupon = ticket_coupons.get(self.ticket_id)
+        discount = coupon["discount"] if coupon else 0.0
+        final_price = base_price * (1 - discount)
+
+        if not hasattr(interaction.client, "purchase_state"):
+            interaction.client.purchase_state = {}
+        interaction.client.purchase_state[interaction.channel.id] = {
+            "ticket_id": self.ticket_id,
+            "robux_amount": amount,
+            "base_price": base_price,
+            "final_price": final_price,
+            "discount": discount,
+            "coupon": coupon,
+        }
+
+        embed = discord.Embed(
+            title="💰 Resumo do Preço",
+            description="Confira o valor antes de continuar:",
+            color=0x00D166,
+        )
+        embed.add_field(name="💎 Quantidade", value=f"**{amount:,} Robux**", inline=True)
+        if discount > 0:
+            embed.add_field(
+                name="💵 Valor",
+                value=f"~~R$ {base_price:.2f}~~ → **R$ {final_price:.2f}**\n`{coupon['code']}` (-{discount*100:.0f}%)",
+                inline=True,
+            )
+        else:
+            embed.add_field(name="💵 Valor", value=f"**R$ {final_price:.2f}**", inline=True)
+        embed.set_footer(text="Clique em ✅ Confirmar para informar seu usuário Roblox.")
+
+        await interaction.followup.send(embed=embed, view=PriceConfirmView())
+
+
+class PriceConfirmView(ui.View):
+    """Passo 2: confirma o preço e abre o modal de username."""
+
+    def __init__(self):
+        super().__init__(timeout=300)
+
+    @ui.button(label="✅ Confirmar", style=discord.ButtonStyle.green, custom_id="buy:price_confirm")
+    async def confirm(self, interaction: discord.Interaction, button: ui.Button):
+        state = getattr(interaction.client, "purchase_state", {}).get(interaction.channel.id)
+        if not state:
             await interaction.response.send_message(
-                f"❌ Mínimo de {min_r:,} Robux.", ephemeral=True
+                "❌ Sessão expirada. Clique em **💰 Iniciar Compra** novamente.", ephemeral=True
+            )
+            return
+        await interaction.response.send_modal(UsernameModal())
+
+    @ui.button(label="❌ Cancelar", style=discord.ButtonStyle.danger, custom_id="buy:price_cancel")
+    async def cancel(self, interaction: discord.Interaction, button: ui.Button):
+        ps = getattr(interaction.client, "purchase_state", {})
+        ps.pop(interaction.channel.id, None)
+        embed = discord.Embed(
+            title="❌ Compra Cancelada",
+            description="Você pode clicar em **💰 Iniciar Compra** para tentar novamente.",
+            color=discord.Color.red(),
+        )
+        await interaction.response.edit_message(embed=embed, view=None)
+
+
+class UsernameModal(ui.Modal, title="👤 Usuário do Roblox"):
+    """Passo 3: pede o nickname do Roblox."""
+
+    roblox_username = ui.TextInput(
+        label="Seu usuário do Roblox",
+        placeholder="Ex: PlayerName123",
+        min_length=3,
+        max_length=50,
+        required=True,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+
+        state = getattr(interaction.client, "purchase_state", {}).get(interaction.channel.id)
+        if not state:
+            await interaction.followup.send(
+                "❌ Sessão expirada. Clique em **💰 Iniciar Compra** novamente.", ephemeral=True
             )
             return
 
-        if amount > max_r:
+        from src.services import roblox_api
+        username = self.roblox_username.value.strip()
+
+        valid, roblox_id, message = await roblox_api.validate_username(username)
+        if not valid:
+            await interaction.followup.send(
+                f"❌ Usuário **{username}** não encontrado no Roblox.\n{message}\n\n"
+                "Verifique o nome e tente novamente clicando em ✅ Confirmar.",
+                ephemeral=True,
+            )
+            return
+
+        avatar_url = (
+            f"https://www.roblox.com/headshot-thumbnail/image"
+            f"?userId={roblox_id}&width=150&height=150&format=png"
+        )
+
+        state["roblox_username"] = username
+        state["roblox_id"] = roblox_id
+        state["avatar_url"] = avatar_url
+
+        embed = discord.Embed(
+            title="👤 Confirmar Conta Roblox",
+            description=(
+                f"Verifique se esta é **sua** conta antes de confirmar:\n\n"
+                f"**Usuário:** `{username}`\n"
+                f"**ID Roblox:** `{roblox_id}`"
+            ),
+            color=0x5865F2,
+        )
+        embed.set_thumbnail(url=avatar_url)
+        embed.add_field(name="💎 Robux", value=f"**{state['robux_amount']:,}**", inline=True)
+        embed.add_field(name="💵 Valor", value=f"**R$ {state['final_price']:.2f}**", inline=True)
+        embed.set_footer(text="⚠️ Certifique-se de que esta é a conta correta!")
+
+        await interaction.followup.send(embed=embed, view=RobloxConfirmView())
+
+
+class RobloxConfirmView(ui.View):
+    """Passo 4: confirma a conta Roblox e inicia o pagamento."""
+
+    def __init__(self):
+        super().__init__(timeout=300)
+
+    @ui.button(label="✅ Confirmar e Pagar", style=discord.ButtonStyle.green, custom_id="buy:roblox_confirm")
+    async def confirm(self, interaction: discord.Interaction, button: ui.Button):
+        state = getattr(interaction.client, "purchase_state", {}).get(interaction.channel.id)
+        if not state:
             await interaction.response.send_message(
-                f"❌ Máximo de {max_r:,} Robux.", ephemeral=True
+                "❌ Sessão expirada. Clique em **💰 Iniciar Compra** novamente.", ephemeral=True
             )
             return
 
         await interaction.response.defer()
 
-        # Processa a compra via OrdersCog
+        ps = getattr(interaction.client, "purchase_state", {})
+        ps.pop(interaction.channel.id, None)
+
         cog = interaction.client.get_cog("OrdersCog")
         if cog:
-            await cog.process_order(
-                interaction, self.ticket_id, amount, self.roblox_username.value.strip()
+            mode = await DynamicConfig.operation_mode()
+            if mode == "manual":
+                await cog.process_manual_order(
+                    interaction,
+                    state["ticket_id"],
+                    state["robux_amount"],
+                    state["roblox_username"],
+                    state["roblox_id"],
+                    state.get("coupon"),
+                )
+            else:
+                await cog.process_order(
+                    interaction,
+                    state["ticket_id"],
+                    state["robux_amount"],
+                    state["roblox_username"],
+                    roblox_id=state["roblox_id"],
+                    coupon=state.get("coupon"),
+                )
+
+    @ui.button(label="❌ Cancelar", style=discord.ButtonStyle.danger, custom_id="buy:roblox_cancel")
+    async def cancel(self, interaction: discord.Interaction, button: ui.Button):
+        ps = getattr(interaction.client, "purchase_state", {})
+        ps.pop(interaction.channel.id, None)
+        embed = discord.Embed(
+            title="❌ Compra Cancelada",
+            description="Você pode clicar em **💰 Iniciar Compra** para tentar novamente.",
+            color=discord.Color.red(),
+        )
+        await interaction.response.edit_message(embed=embed, view=None)
+
+    @ui.button(label="✏️ Trocar Usuário", style=discord.ButtonStyle.gray, custom_id="buy:roblox_change")
+    async def change(self, interaction: discord.Interaction, button: ui.Button):
+        state = getattr(interaction.client, "purchase_state", {}).get(interaction.channel.id)
+        if not state:
+            await interaction.response.send_message(
+                "❌ Sessão expirada.", ephemeral=True
             )
+            return
+        await interaction.response.send_modal(UsernameModal())
 
 
 class CouponModal(ui.Modal, title="🎟️ Usar Cupom"):
@@ -546,6 +712,14 @@ async def setup_ticket_panel(bot: commands.Bot) -> None:
         ),
         color=color,
     )
+    if shop_cfg.get("title_url"):
+        main_embed.url = shop_cfg["title_url"]
+    if shop_cfg.get("author_name"):
+        main_embed.set_author(
+            name=shop_cfg["author_name"],
+            icon_url=shop_cfg.get("author_icon_url") or None,
+            url=shop_cfg.get("author_url") or None,
+        )
     if shop_cfg.get("thumbnail_url"):
         main_embed.set_thumbnail(url=shop_cfg["thumbnail_url"])
 
@@ -577,12 +751,21 @@ async def setup_ticket_panel(bot: commands.Bot) -> None:
     embeds_to_send.append(features_embed)
 
     # CTA
+    # Custom fields configurados pelo admin
+    for f in shop_cfg.get("fields", []):
+        main_embed.add_field(
+            name=f.get("name", ""),
+            value=f.get("value", ""),
+            inline=f.get("inline", True),
+        )
+
     cta_embed = discord.Embed(
         description="```\n🛒 Clique no botão abaixo para iniciar sua compra!\n```",
         color=0xFEE75C,
     )
     footer_text = shop_cfg.get("footer", "🕐 Atendimento 24/7 • ⭐ +1000 clientes satisfeitos")
-    cta_embed.set_footer(text=footer_text)
+    footer_icon = shop_cfg.get("footer_icon_url") or None
+    cta_embed.set_footer(text=footer_text, icon_url=footer_icon)
     embeds_to_send.append(cta_embed)
 
     view = TicketCreateButton()

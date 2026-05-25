@@ -48,11 +48,16 @@ class RobuxBot(commands.Bot):
         # Registra views persistentes
         self.add_view(TicketCreateButton())
         from src.cogs.tickets import TicketActionsView
-        from src.cogs.orders import OrderActionsView, GamepassConfirmView
+        from src.cogs.orders import (
+            OrderActionsView, GamepassConfirmView,
+            ManualPaymentView, AdminProofConfirmView,
+        )
 
         self.add_view(TicketActionsView())
         self.add_view(OrderActionsView())
         self.add_view(GamepassConfirmView())
+        self.add_view(ManualPaymentView())
+        self.add_view(AdminProofConfirmView())
         # Views de tickets são adicionadas dinamicamente
 
         # Carrega cogs

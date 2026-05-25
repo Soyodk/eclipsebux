@@ -50,6 +50,31 @@ async def get_daily_stats(guild) -> dict:
 
 
 # ══════════════════════════════════════════════════════════════════
+# HELPER: embed do painel principal (para botão voltar)
+# ══════════════════════════════════════════════════════════════════
+
+async def build_config_main_embed() -> discord.Embed:
+    settings = get_settings()
+    mode = await DynamicConfig.operation_mode()
+    price = await DynamicConfig.price_per_1000()
+    mode_labels = {"auto": "🤖 Automático", "semi_auto": "⚡ Semi-Automático", "manual": "👤 Manual"}
+    embed = discord.Embed(
+        title="⚙️ Painel de Configuração",
+        description="Bem-vindo ao painel central de configurações!\nUse o menu abaixo para navegar entre as seções.\n\n**Configurações atuais:**",
+        color=discord.Color.blurple(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.add_field(name="🤖 Modo", value=mode_labels.get(mode, mode), inline=True)
+    embed.add_field(name="💵 Preço/1k R$", value=f"R$ {price/100:.2f}", inline=True)
+    embed.add_field(name="📉 Mínimo", value=f"{await DynamicConfig.min_robux():,} R$", inline=True)
+    embed.add_field(name="📈 Máximo", value=f"{await DynamicConfig.max_robux():,} R$", inline=True)
+    daily_robux = await DynamicConfig.daily_limit_robux()
+    embed.add_field(name="🗓️ Limite Diário", value=f"{daily_robux:,} R$" if daily_robux else "Sem limite", inline=True)
+    embed.add_field(name="💎 Estoque Visível", value="✅ Sim" if await DynamicConfig.robux_stock_display() else "❌ Não", inline=True)
+    return embed
+
+
+# ══════════════════════════════════════════════════════════════════
 # PAINEL PRINCIPAL
 # ══════════════════════════════════════════════════════════════════
 
@@ -67,6 +92,8 @@ class ConfigMainView(ui.View):
         options=[
             discord.SelectOption(label="🤖 Modo de Operação", value="mode",
                                  description="Automático, Semi-automático ou Manual"),
+            discord.SelectOption(label="💳 Pix Manual", value="pix",
+                                 description="Chave Pix para pagamento manual"),
             discord.SelectOption(label="💰 Preços & Limites", value="prices",
                                  description="Preço/Robux, mínimo, máximo, limite diário"),
             discord.SelectOption(label="📢 Canais", value="channels",
@@ -74,7 +101,7 @@ class ConfigMainView(ui.View):
             discord.SelectOption(label="👥 Cargos", value="roles",
                                  description="Admin, Cliente, VIP"),
             discord.SelectOption(label="🎨 Embed da Loja", value="shop_embed",
-                                 description="Título, descrição, cor, banner, rodapé"),
+                                 description="Título, descrição, cor, banner, autor, fields"),
             discord.SelectOption(label="🎫 Embed do Ticket", value="ticket_embed",
                                  description="Mensagem de boas-vindas do ticket"),
             discord.SelectOption(label="💎 Estoque de Robux", value="stock",
@@ -89,6 +116,10 @@ class ConfigMainView(ui.View):
         if section == "mode":
             await interaction.response.send_message(
                 embed=await build_mode_embed(), view=ModeView(self.bot), ephemeral=True
+            )
+        elif section == "pix":
+            await interaction.response.send_message(
+                embed=await build_pix_embed(), view=PixView(self.bot), ephemeral=True
             )
         elif section == "prices":
             await interaction.response.send_message(
@@ -174,35 +205,30 @@ class ModeView(ui.View):
         super().__init__(timeout=180)
         self.bot = bot
 
-    @ui.button(label="🤖 Automático", style=discord.ButtonStyle.green, custom_id="cfg:mode_auto")
+    @ui.button(label="🤖 Automático", style=discord.ButtonStyle.green, custom_id="cfg:mode_auto", row=0)
     async def mode_auto(self, interaction: discord.Interaction, button: ui.Button):
         await DynamicConfig.set("operation_mode", "auto", updated_by=interaction.user.id)
-        await interaction.response.edit_message(
-            embed=await build_mode_embed(), view=self
-        )
-        await LogRepository.log("config_changed", interaction.user.id,
-                                details={"key": "operation_mode", "value": "auto"})
+        await interaction.response.edit_message(embed=await build_mode_embed(), view=self)
+        await LogRepository.log("config_changed", interaction.user.id, details={"key": "operation_mode", "value": "auto"})
         await interaction.followup.send("✅ Modo **Automático** ativado!", ephemeral=True)
 
-    @ui.button(label="⚡ Semi-Automático", style=discord.ButtonStyle.blurple, custom_id="cfg:mode_semi")
+    @ui.button(label="⚡ Semi-Automático", style=discord.ButtonStyle.blurple, custom_id="cfg:mode_semi", row=0)
     async def mode_semi(self, interaction: discord.Interaction, button: ui.Button):
         await DynamicConfig.set("operation_mode", "semi_auto", updated_by=interaction.user.id)
-        await interaction.response.edit_message(
-            embed=await build_mode_embed(), view=self
-        )
-        await LogRepository.log("config_changed", interaction.user.id,
-                                details={"key": "operation_mode", "value": "semi_auto"})
+        await interaction.response.edit_message(embed=await build_mode_embed(), view=self)
+        await LogRepository.log("config_changed", interaction.user.id, details={"key": "operation_mode", "value": "semi_auto"})
         await interaction.followup.send("✅ Modo **Semi-Automático** ativado!", ephemeral=True)
 
-    @ui.button(label="👤 Manual", style=discord.ButtonStyle.danger, custom_id="cfg:mode_manual")
+    @ui.button(label="👤 Manual", style=discord.ButtonStyle.danger, custom_id="cfg:mode_manual", row=0)
     async def mode_manual(self, interaction: discord.Interaction, button: ui.Button):
         await DynamicConfig.set("operation_mode", "manual", updated_by=interaction.user.id)
-        await interaction.response.edit_message(
-            embed=await build_mode_embed(), view=self
-        )
-        await LogRepository.log("config_changed", interaction.user.id,
-                                details={"key": "operation_mode", "value": "manual"})
+        await interaction.response.edit_message(embed=await build_mode_embed(), view=self)
+        await LogRepository.log("config_changed", interaction.user.id, details={"key": "operation_mode", "value": "manual"})
         await interaction.followup.send("✅ Modo **Manual** ativado!", ephemeral=True)
+
+    @ui.button(label="⬅️ Voltar", style=discord.ButtonStyle.secondary, custom_id="cfg:mode_back", row=1)
+    async def back(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.edit_message(embed=await build_config_main_embed(), view=ConfigMainView(self.bot))
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -264,6 +290,10 @@ class PricesView(ui.View):
         await DynamicConfig.delete("daily_limit_brl")
         await interaction.response.edit_message(embed=await build_prices_embed(), view=self)
         await interaction.followup.send("✅ Limite diário removido!", ephemeral=True)
+
+    @ui.button(label="⬅️ Voltar", style=discord.ButtonStyle.secondary, custom_id="cfg:prices_back", row=1)
+    async def back(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.edit_message(embed=await build_config_main_embed(), view=ConfigMainView(self.bot))
 
 
 class PricesModal(ui.Modal, title="💰 Configurar Preços"):
@@ -460,6 +490,10 @@ class ChannelsView(ui.View):
         )
         await interaction.followup.send(f"✅ Categoria de Tickets → **{ch.name}**", ephemeral=True)
 
+    @ui.button(label="⬅️ Voltar", style=discord.ButtonStyle.secondary, custom_id="cfg:ch_back", row=1)
+    async def back(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.edit_message(embed=await build_config_main_embed(), view=ConfigMainView(self.bot))
+
 
 # ══════════════════════════════════════════════════════════════════
 # SEÇÃO: CARGOS
@@ -532,6 +566,10 @@ class RolesView(ui.View):
         )
         await interaction.followup.send(f"✅ Cargo VIP → {role.mention}", ephemeral=True)
 
+    @ui.button(label="⬅️ Voltar", style=discord.ButtonStyle.secondary, custom_id="cfg:roles_back", row=1)
+    async def back(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.edit_message(embed=await build_config_main_embed(), view=ConfigMainView(self.bot))
+
 
 # ══════════════════════════════════════════════════════════════════
 # SEÇÃO: EMBED DA LOJA
@@ -540,18 +578,20 @@ class RolesView(ui.View):
 async def build_shop_embed_config_embed() -> discord.Embed:
     cfg = await DynamicConfig.shop_embed()
     color = cfg.get("color", 0x00D166)
+    fields = cfg.get("fields", [])
     embed = discord.Embed(
-        title="🎨 Embed da Loja — Pré-visualização",
-        description=(
-            f"**Título:** {cfg.get('title', '')}\n"
-            f"**Descrição:** {cfg.get('description', '')[:100]}...\n"
-            f"**Cor:** `#{color:06X}`\n"
-            f"**Banner URL:** {cfg.get('banner_url', '') or '*(não definido)*'}\n"
-            f"**Rodapé:** {cfg.get('footer', '')}\n"
-        ),
+        title="🎨 Embed da Loja — Configurações",
         color=color,
     )
-    embed.set_footer(text="Clique em 'Editar' para modificar cada parte da embed.")
+    embed.add_field(name="📌 Título", value=cfg.get("title", "*(padrão)*")[:60], inline=True)
+    embed.add_field(name="🎨 Cor", value=f"`#{color:06X}`", inline=True)
+    embed.add_field(name="📝 Descrição", value=(cfg.get("description", "*(padrão)*")[:80] + "...") if len(cfg.get("description",""))>80 else cfg.get("description","*(padrão)*"), inline=False)
+    embed.add_field(name="👤 Autor", value=cfg.get("author_name", "*(não definido)*") or "*(não definido)*", inline=True)
+    embed.add_field(name="🖼️ Banner", value="✅ Definido" if cfg.get("banner_url") else "❌ Não definido", inline=True)
+    embed.add_field(name="🖼️ Thumbnail", value="✅ Definida" if cfg.get("thumbnail_url") else "❌ Não definida", inline=True)
+    embed.add_field(name="📋 Fields", value=f"{len(fields)} field(s) configurado(s)", inline=True)
+    embed.add_field(name="📎 Rodapé", value=cfg.get("footer", "*(não definido)*")[:60] or "*(não definido)*", inline=True)
+    embed.set_footer(text="Use os botões abaixo para editar cada parte. '⬅️ Voltar' volta ao menu.")
     return embed
 
 
@@ -560,15 +600,23 @@ class ShopEmbedView(ui.View):
         super().__init__(timeout=180)
         self.bot = bot
 
-    @ui.button(label="✏️ Editar Texto", style=discord.ButtonStyle.blurple, row=0)
+    @ui.button(label="✏️ Texto & Rodapé", style=discord.ButtonStyle.blurple, row=0)
     async def edit_text(self, interaction: discord.Interaction, button: ui.Button):
         await interaction.response.send_modal(ShopEmbedTextModal())
 
-    @ui.button(label="🎨 Cor & Banner", style=discord.ButtonStyle.gray, row=0)
+    @ui.button(label="🎨 Cor & Imagens", style=discord.ButtonStyle.gray, row=0)
     async def edit_style(self, interaction: discord.Interaction, button: ui.Button):
         await interaction.response.send_modal(ShopEmbedStyleModal())
 
-    @ui.button(label="👁️ Pré-visualizar", style=discord.ButtonStyle.green, row=0)
+    @ui.button(label="👤 Autor & URL", style=discord.ButtonStyle.gray, row=0)
+    async def edit_author(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.send_modal(ShopEmbedAuthorModal())
+
+    @ui.button(label="📋 Fields", style=discord.ButtonStyle.gray, row=0)
+    async def edit_fields(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.send_modal(ShopEmbedFieldsModal())
+
+    @ui.button(label="👁️ Pré-visualizar", style=discord.ButtonStyle.green, row=1)
     async def preview(self, interaction: discord.Interaction, button: ui.Button):
         cfg = await DynamicConfig.shop_embed()
         color = cfg.get("color", 0x00D166)
@@ -579,14 +627,25 @@ class ShopEmbedView(ui.View):
             description=cfg.get("description", ""),
             color=color,
         )
+        if cfg.get("author_name"):
+            preview_embed.set_author(
+                name=cfg["author_name"],
+                icon_url=cfg.get("author_icon_url") or discord.Embed.Empty,
+                url=cfg.get("author_url") or discord.Embed.Empty,
+            )
+        if cfg.get("title_url"):
+            preview_embed.url = cfg["title_url"]
         preview_embed.add_field(name="💰 Preço", value=f"R$ {price_reais:.2f} / 1.000 R$", inline=True)
         preview_embed.add_field(name="⚡ Entrega", value="Instantânea", inline=True)
         preview_embed.add_field(name="💳 Pagamento", value="PIX", inline=True)
+        for f in cfg.get("fields", []):
+            preview_embed.add_field(name=f.get("name",""), value=f.get("value",""), inline=f.get("inline", True))
         if cfg.get("banner_url"):
             preview_embed.set_image(url=cfg["banner_url"])
         if cfg.get("thumbnail_url"):
             preview_embed.set_thumbnail(url=cfg["thumbnail_url"])
-        preview_embed.set_footer(text=cfg.get("footer", ""))
+        if cfg.get("footer") or cfg.get("footer_icon_url"):
+            preview_embed.set_footer(text=cfg.get("footer",""), icon_url=cfg.get("footer_icon_url") or discord.Embed.Empty)
         await interaction.response.send_message(
             content="**📋 Pré-visualização da embed da loja:**",
             embed=preview_embed, ephemeral=True
@@ -596,7 +655,6 @@ class ShopEmbedView(ui.View):
     async def apply_to_panel(self, interaction: discord.Interaction, button: ui.Button):
         await interaction.response.defer(ephemeral=True)
         from src.cogs.tickets import setup_ticket_panel
-        # Força recriação
         settings = get_settings()
         vendas_id = await DynamicConfig.channel_vendas_id() or settings.channel_vendas_id
         channel = interaction.guild.get_channel(vendas_id)
@@ -608,61 +666,34 @@ class ShopEmbedView(ui.View):
         await setup_ticket_panel(interaction.client)
         await interaction.followup.send("✅ Painel da loja atualizado!", ephemeral=True)
 
+    @ui.button(label="⬅️ Voltar", style=discord.ButtonStyle.secondary, custom_id="cfg:shop_back", row=2)
+    async def back(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.edit_message(embed=await build_config_main_embed(), view=ConfigMainView(self.bot))
 
-class ShopEmbedTextModal(ui.Modal, title="🎨 Editar Texto da Embed da Loja"):
-    titulo = ui.TextInput(
-        label="Título",
-        placeholder="🏪 Loja Oficial de Robux",
-        max_length=256,
-        required=True,
-    )
-    descricao = ui.TextInput(
-        label="Descrição",
-        style=discord.TextStyle.paragraph,
-        placeholder="Compre Robux de forma rápida e segura!",
-        max_length=2000,
-        required=True,
-    )
-    rodape = ui.TextInput(
-        label="Rodapé",
-        placeholder="🕐 Atendimento 24/7 • ⭐ +1000 clientes satisfeitos",
-        max_length=200,
-        required=False,
-    )
+
+class ShopEmbedTextModal(ui.Modal, title="🎨 Texto & Rodapé da Embed da Loja"):
+    titulo = ui.TextInput(label="Título", placeholder="🏪 Loja Oficial de Robux", max_length=256, required=True)
+    titulo_url = ui.TextInput(label="URL do Título (clicável, opcional)", placeholder="https://...", max_length=500, required=False)
+    descricao = ui.TextInput(label="Descrição", style=discord.TextStyle.paragraph, placeholder="Compre Robux de forma rápida e segura!", max_length=2000, required=True)
+    rodape = ui.TextInput(label="Rodapé", placeholder="🕐 Atendimento 24/7 • ⭐ +1000 clientes satisfeitos", max_length=200, required=False)
+    rodape_icon = ui.TextInput(label="URL do Ícone do Rodapé (opcional)", placeholder="https://i.imgur.com/...", max_length=500, required=False)
 
     async def on_submit(self, interaction: discord.Interaction):
         cfg = await DynamicConfig.shop_embed()
         cfg["title"] = self.titulo.value
+        cfg["title_url"] = self.titulo_url.value or ""
         cfg["description"] = self.descricao.value
         cfg["footer"] = self.rodape.value
+        cfg["footer_icon_url"] = self.rodape_icon.value or ""
         await DynamicConfig.set("shop_embed", cfg, updated_by=interaction.user.id)
-        await LogRepository.log("config_changed", interaction.user.id,
-                                details={"section": "shop_embed_text"})
-        await interaction.response.send_message(
-            "✅ Texto da embed da loja atualizado! Clique em **🔄 Aplicar ao Painel** para publicar.",
-            ephemeral=True
-        )
+        await LogRepository.log("config_changed", interaction.user.id, details={"section": "shop_embed_text"})
+        await interaction.response.send_message("✅ Texto da embed da loja atualizado! Use **🔄 Aplicar ao Painel** para publicar.", ephemeral=True)
 
 
 class ShopEmbedStyleModal(ui.Modal, title="🎨 Cor & Imagens da Embed da Loja"):
-    cor = ui.TextInput(
-        label="Cor (HEX, ex: #00D166)",
-        placeholder="#00D166",
-        max_length=10,
-        required=False,
-    )
-    banner = ui.TextInput(
-        label="URL do Banner (imagem grande)",
-        placeholder="https://i.imgur.com/...",
-        max_length=500,
-        required=False,
-    )
-    thumbnail = ui.TextInput(
-        label="URL da Thumbnail (ícone pequeno)",
-        placeholder="https://i.imgur.com/...",
-        max_length=500,
-        required=False,
-    )
+    cor = ui.TextInput(label="Cor (HEX, ex: #00D166)", placeholder="#00D166", max_length=10, required=False)
+    banner = ui.TextInput(label="URL do Banner (imagem grande abaixo)", placeholder="https://i.imgur.com/...", max_length=500, required=False)
+    thumbnail = ui.TextInput(label="URL da Thumbnail (ícone pequeno no canto)", placeholder="https://i.imgur.com/...", max_length=500, required=False)
 
     async def on_submit(self, interaction: discord.Interaction):
         cfg = await DynamicConfig.shop_embed()
@@ -673,12 +704,50 @@ class ShopEmbedStyleModal(ui.Modal, title="🎨 Cor & Imagens da Embed da Loja")
         if self.thumbnail.value:
             cfg["thumbnail_url"] = self.thumbnail.value
         await DynamicConfig.set("shop_embed", cfg, updated_by=interaction.user.id)
-        await LogRepository.log("config_changed", interaction.user.id,
-                                details={"section": "shop_embed_style"})
-        await interaction.response.send_message(
-            "✅ Estilo da embed atualizado! Clique em **🔄 Aplicar ao Painel** para publicar.",
-            ephemeral=True
-        )
+        await LogRepository.log("config_changed", interaction.user.id, details={"section": "shop_embed_style"})
+        await interaction.response.send_message("✅ Estilo da embed atualizado! Use **🔄 Aplicar ao Painel** para publicar.", ephemeral=True)
+
+
+class ShopEmbedAuthorModal(ui.Modal, title="👤 Autor da Embed da Loja"):
+    author_name = ui.TextInput(label="Nome do Autor (deixe vazio para remover)", placeholder="Ex: Loja Oficial de Robux", max_length=256, required=False)
+    author_icon = ui.TextInput(label="URL do Ícone do Autor (opcional)", placeholder="https://i.imgur.com/...", max_length=500, required=False)
+    author_url = ui.TextInput(label="URL do Autor (clicável, opcional)", placeholder="https://...", max_length=500, required=False)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        cfg = await DynamicConfig.shop_embed()
+        cfg["author_name"] = self.author_name.value
+        cfg["author_icon_url"] = self.author_icon.value or ""
+        cfg["author_url"] = self.author_url.value or ""
+        await DynamicConfig.set("shop_embed", cfg, updated_by=interaction.user.id)
+        await LogRepository.log("config_changed", interaction.user.id, details={"section": "shop_embed_author"})
+        await interaction.response.send_message("✅ Autor da embed atualizado! Use **🔄 Aplicar ao Painel** para publicar.", ephemeral=True)
+
+
+class ShopEmbedFieldsModal(ui.Modal, title="📋 Fields da Embed da Loja"):
+    f1_name = ui.TextInput(label="Field 1 — Nome", placeholder="Ex: 🔒 Segurança", max_length=256, required=False)
+    f1_value = ui.TextInput(label="Field 1 — Valor", placeholder="Ex: 100% seguro via Gamepass", max_length=1024, required=False)
+    f2_name = ui.TextInput(label="Field 2 — Nome", placeholder="Ex: ⚡ Entrega", max_length=256, required=False)
+    f2_value = ui.TextInput(label="Field 2 — Valor", placeholder="Ex: Instantânea após PIX", max_length=1024, required=False)
+    f3_name = ui.TextInput(label="Field 3 — Nome (ou 'LIMPAR' para apagar todos)", placeholder="Ex: 💎 Estoque", max_length=256, required=False)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        cfg = await DynamicConfig.shop_embed()
+        if self.f3_name.value.strip().upper() == "LIMPAR":
+            cfg["fields"] = []
+            await DynamicConfig.set("shop_embed", cfg, updated_by=interaction.user.id)
+            await interaction.response.send_message("✅ Todos os fields removidos!", ephemeral=True)
+            return
+        fields = []
+        if self.f1_name.value and self.f1_value.value:
+            fields.append({"name": self.f1_name.value, "value": self.f1_value.value, "inline": True})
+        if self.f2_name.value and self.f2_value.value:
+            fields.append({"name": self.f2_name.value, "value": self.f2_value.value, "inline": True})
+        if self.f3_name.value and self.f3_name.value.upper() != "LIMPAR":
+            fields.append({"name": self.f3_name.value, "value": "(sem valor)", "inline": True})
+        cfg["fields"] = fields
+        await DynamicConfig.set("shop_embed", cfg, updated_by=interaction.user.id)
+        await LogRepository.log("config_changed", interaction.user.id, details={"section": "shop_embed_fields"})
+        await interaction.response.send_message(f"✅ {len(fields)} field(s) configurado(s)! Use **🔄 Aplicar ao Painel** para publicar.", ephemeral=True)
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -688,20 +757,17 @@ class ShopEmbedStyleModal(ui.Modal, title="🎨 Cor & Imagens da Embed da Loja")
 async def build_ticket_embed_config_embed() -> discord.Embed:
     cfg = await DynamicConfig.ticket_embed()
     color = cfg.get("color", 0x5865F2)
-    embed = discord.Embed(
-        title="🎫 Embed do Ticket — Pré-visualização",
-        description=(
-            f"**Título:** {cfg.get('title', '')}\n"
-            f"**Descrição:** {cfg.get('description', '')[:120]}...\n"
-            f"**Cor:** `#{color:06X}`\n"
-            f"**Banner URL:** {cfg.get('banner_url', '') or '*(não definido)*'}\n"
-            f"**Rodapé:** {cfg.get('footer', '')}\n"
-            f"**Tabela de Preços:** {'✅ Ativada' if cfg.get('show_price_table', True) else '❌ Desativada'}\n"
-            f"**Passos de Compra:** {'✅ Ativados' if cfg.get('show_steps', True) else '❌ Desativados'}\n"
-        ),
-        color=color,
-    )
-    embed.set_footer(text="Use `{mention}` na descrição para mencionar o usuário.")
+    fields = cfg.get("fields", [])
+    embed = discord.Embed(title="🎫 Embed do Ticket — Configurações", color=color)
+    embed.add_field(name="📌 Título", value=cfg.get("title", "*(padrão)*")[:60], inline=True)
+    embed.add_field(name="🎨 Cor", value=f"`#{color:06X}`", inline=True)
+    embed.add_field(name="📝 Descrição", value=(cfg.get("description","*(padrão)*")[:80]+"...") if len(cfg.get("description",""))>80 else cfg.get("description","*(padrão)*"), inline=False)
+    embed.add_field(name="👤 Autor", value=cfg.get("author_name","*(não definido)*") or "*(não definido)*", inline=True)
+    embed.add_field(name="🖼️ Banner", value="✅ Definido" if cfg.get("banner_url") else "❌ Não definido", inline=True)
+    embed.add_field(name="📋 Fields", value=f"{len(fields)} field(s)", inline=True)
+    embed.add_field(name="💰 Tabela de Preços", value="✅ Ativada" if cfg.get("show_price_table", True) else "❌ Desativada", inline=True)
+    embed.add_field(name="📋 Passos de Compra", value="✅ Ativados" if cfg.get("show_steps", True) else "❌ Desativados", inline=True)
+    embed.set_footer(text="Use {mention} na descrição para mencionar o usuário.")
     return embed
 
 
@@ -710,80 +776,64 @@ class TicketEmbedView(ui.View):
         super().__init__(timeout=180)
         self.bot = bot
 
-    @ui.button(label="✏️ Editar Texto", style=discord.ButtonStyle.blurple, row=0)
+    @ui.button(label="✏️ Texto & Rodapé", style=discord.ButtonStyle.blurple, row=0)
     async def edit_text(self, interaction: discord.Interaction, button: ui.Button):
         await interaction.response.send_modal(TicketEmbedTextModal())
 
-    @ui.button(label="🎨 Cor & Banner", style=discord.ButtonStyle.gray, row=0)
+    @ui.button(label="🎨 Cor & Imagens", style=discord.ButtonStyle.gray, row=0)
     async def edit_style(self, interaction: discord.Interaction, button: ui.Button):
         await interaction.response.send_modal(TicketEmbedStyleModal())
+
+    @ui.button(label="👤 Autor & URL", style=discord.ButtonStyle.gray, row=0)
+    async def edit_author(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.send_modal(TicketEmbedAuthorModal())
+
+    @ui.button(label="📋 Fields", style=discord.ButtonStyle.gray, row=0)
+    async def edit_fields(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.send_modal(TicketEmbedFieldsModal())
 
     @ui.button(label="🔁 Tabela de Preços", style=discord.ButtonStyle.green, row=1)
     async def toggle_price_table(self, interaction: discord.Interaction, button: ui.Button):
         cfg = await DynamicConfig.ticket_embed()
         cfg["show_price_table"] = not cfg.get("show_price_table", True)
         await DynamicConfig.set("ticket_embed", cfg, updated_by=interaction.user.id)
-        await interaction.response.edit_message(
-            embed=await build_ticket_embed_config_embed(), view=self
-        )
+        await interaction.response.edit_message(embed=await build_ticket_embed_config_embed(), view=self)
 
     @ui.button(label="🔁 Passos de Compra", style=discord.ButtonStyle.green, row=1)
     async def toggle_steps(self, interaction: discord.Interaction, button: ui.Button):
         cfg = await DynamicConfig.ticket_embed()
         cfg["show_steps"] = not cfg.get("show_steps", True)
         await DynamicConfig.set("ticket_embed", cfg, updated_by=interaction.user.id)
-        await interaction.response.edit_message(
-            embed=await build_ticket_embed_config_embed(), view=self
-        )
+        await interaction.response.edit_message(embed=await build_ticket_embed_config_embed(), view=self)
+
+    @ui.button(label="⬅️ Voltar", style=discord.ButtonStyle.secondary, custom_id="cfg:ticket_embed_back", row=2)
+    async def back(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.edit_message(embed=await build_config_main_embed(), view=ConfigMainView(self.bot))
 
 
-class TicketEmbedTextModal(ui.Modal, title="🎫 Editar Texto do Ticket"):
-    titulo = ui.TextInput(
-        label="Título do Ticket",
-        placeholder="🛒 Bem-vindo à Loja de Robux!",
-        max_length=256,
-        required=True,
-    )
-    descricao = ui.TextInput(
-        label="Descrição (use {mention} para mencionar)",
-        style=discord.TextStyle.paragraph,
-        placeholder="Olá {mention}! 👋\n\nBem-vindo à nossa loja!",
-        max_length=2000,
-        required=True,
-    )
-    rodape = ui.TextInput(
-        label="Rodapé",
-        placeholder="Atendimento 24/7",
-        max_length=200,
-        required=False,
-    )
+class TicketEmbedTextModal(ui.Modal, title="🎫 Texto & Rodapé do Ticket"):
+    titulo = ui.TextInput(label="Título do Ticket", placeholder="🛒 Bem-vindo à Loja de Robux!", max_length=256, required=True)
+    titulo_url = ui.TextInput(label="URL do Título (clicável, opcional)", placeholder="https://...", max_length=500, required=False)
+    descricao = ui.TextInput(label="Descrição (use {mention})", style=discord.TextStyle.paragraph, placeholder="Olá {mention}! 👋\n\nBem-vindo à nossa loja!", max_length=2000, required=True)
+    rodape = ui.TextInput(label="Rodapé", placeholder="Atendimento 24/7", max_length=200, required=False)
+    rodape_icon = ui.TextInput(label="URL do Ícone do Rodapé (opcional)", placeholder="https://i.imgur.com/...", max_length=500, required=False)
 
     async def on_submit(self, interaction: discord.Interaction):
         cfg = await DynamicConfig.ticket_embed()
         cfg["title"] = self.titulo.value
+        cfg["title_url"] = self.titulo_url.value or ""
         cfg["description"] = self.descricao.value
         cfg["footer"] = self.rodape.value
+        cfg["footer_icon_url"] = self.rodape_icon.value or ""
         await DynamicConfig.set("ticket_embed", cfg, updated_by=interaction.user.id)
-        await LogRepository.log("config_changed", interaction.user.id,
-                                details={"section": "ticket_embed_text"})
-        await interaction.response.send_message(
-            "✅ Texto da embed do ticket atualizado!", ephemeral=True
-        )
+        await LogRepository.log("config_changed", interaction.user.id, details={"section": "ticket_embed_text"})
+        await interaction.response.send_message("✅ Texto da embed do ticket atualizado!", ephemeral=True)
 
 
-class TicketEmbedStyleModal(ui.Modal, title="🎨 Cor & Banner do Ticket"):
-    cor = ui.TextInput(
-        label="Cor (HEX, ex: #5865F2)",
-        placeholder="#5865F2",
-        max_length=10,
-        required=False,
-    )
-    banner = ui.TextInput(
-        label="URL do Banner",
-        placeholder="https://i.imgur.com/...",
-        max_length=500,
-        required=False,
-    )
+class TicketEmbedStyleModal(ui.Modal, title="🎨 Cor & Imagens do Ticket"):
+    cor = ui.TextInput(label="Cor (HEX, ex: #5865F2)", placeholder="#5865F2", max_length=10, required=False)
+    banner = ui.TextInput(label="URL do Banner (imagem grande)", placeholder="https://i.imgur.com/...", max_length=500, required=False)
+    thumbnail = ui.TextInput(label="URL da Thumbnail (ícone pequeno)", placeholder="https://i.imgur.com/...", max_length=500, required=False)
 
     async def on_submit(self, interaction: discord.Interaction):
         cfg = await DynamicConfig.ticket_embed()
@@ -791,10 +841,50 @@ class TicketEmbedStyleModal(ui.Modal, title="🎨 Cor & Banner do Ticket"):
             cfg["color"] = color_from_hex(self.cor.value)
         if self.banner.value:
             cfg["banner_url"] = self.banner.value
+        if self.thumbnail.value:
+            cfg["thumbnail_url"] = self.thumbnail.value
         await DynamicConfig.set("ticket_embed", cfg, updated_by=interaction.user.id)
-        await interaction.response.send_message(
-            "✅ Estilo do ticket atualizado!", ephemeral=True
-        )
+        await interaction.response.send_message("✅ Estilo do ticket atualizado!", ephemeral=True)
+
+
+class TicketEmbedAuthorModal(ui.Modal, title="👤 Autor da Embed do Ticket"):
+    author_name = ui.TextInput(label="Nome do Autor (deixe vazio para remover)", placeholder="Ex: Suporte da Loja", max_length=256, required=False)
+    author_icon = ui.TextInput(label="URL do Ícone do Autor (opcional)", placeholder="https://i.imgur.com/...", max_length=500, required=False)
+    author_url = ui.TextInput(label="URL do Autor (clicável, opcional)", placeholder="https://...", max_length=500, required=False)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        cfg = await DynamicConfig.ticket_embed()
+        cfg["author_name"] = self.author_name.value
+        cfg["author_icon_url"] = self.author_icon.value or ""
+        cfg["author_url"] = self.author_url.value or ""
+        await DynamicConfig.set("ticket_embed", cfg, updated_by=interaction.user.id)
+        await interaction.response.send_message("✅ Autor da embed do ticket atualizado!", ephemeral=True)
+
+
+class TicketEmbedFieldsModal(ui.Modal, title="📋 Fields da Embed do Ticket"):
+    f1_name = ui.TextInput(label="Field 1 — Nome", placeholder="Ex: 🔒 Segurança", max_length=256, required=False)
+    f1_value = ui.TextInput(label="Field 1 — Valor", placeholder="Ex: 100% seguro via Gamepass", max_length=1024, required=False)
+    f2_name = ui.TextInput(label="Field 2 — Nome", placeholder="Ex: ⚡ Entrega", max_length=256, required=False)
+    f2_value = ui.TextInput(label="Field 2 — Valor", placeholder="Ex: Instantânea após PIX", max_length=1024, required=False)
+    f3_name = ui.TextInput(label="Field 3 — Nome (ou 'LIMPAR' para apagar tudo)", placeholder="Ex: 💎 Estoque", max_length=256, required=False)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        cfg = await DynamicConfig.ticket_embed()
+        if self.f3_name.value.strip().upper() == "LIMPAR":
+            cfg["fields"] = []
+            await DynamicConfig.set("ticket_embed", cfg, updated_by=interaction.user.id)
+            await interaction.response.send_message("✅ Todos os fields removidos!", ephemeral=True)
+            return
+        fields = []
+        if self.f1_name.value and self.f1_value.value:
+            fields.append({"name": self.f1_name.value, "value": self.f1_value.value, "inline": True})
+        if self.f2_name.value and self.f2_value.value:
+            fields.append({"name": self.f2_name.value, "value": self.f2_value.value, "inline": True})
+        if self.f3_name.value and self.f3_name.value.upper() != "LIMPAR":
+            fields.append({"name": self.f3_name.value, "value": "(sem valor)", "inline": True})
+        cfg["fields"] = fields
+        await DynamicConfig.set("ticket_embed", cfg, updated_by=interaction.user.id)
+        await interaction.response.send_message(f"✅ {len(fields)} field(s) configurado(s)!", ephemeral=True)
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -862,6 +952,10 @@ class StockView(ui.View):
             embed=await build_stock_embed(self.bot), view=self
         )
 
+    @ui.button(label="⬅️ Voltar", style=discord.ButtonStyle.secondary, custom_id="cfg:stock_back", row=1)
+    async def back(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.edit_message(embed=await build_config_main_embed(), view=ConfigMainView(self.bot))
+
 
 class StockAlertModal(ui.Modal, title="⚠️ Alerta de Estoque Baixo"):
     limite = ui.TextInput(
@@ -882,6 +976,90 @@ class StockAlertModal(ui.Modal, title="⚠️ Alerta de Estoque Baixo"):
         await DynamicConfig.set("stock_low_alert", val, updated_by=interaction.user.id)
         await interaction.response.send_message(
             f"✅ Alerta definido: notificar quando < **{val:,}** Robux", ephemeral=True
+        )
+
+
+# ══════════════════════════════════════════════════════════════════
+# SEÇÃO: PIX MANUAL
+# ══════════════════════════════════════════════════════════════════
+
+async def build_pix_embed() -> discord.Embed:
+    pix_key = await DynamicConfig.get("manual_pix_key")
+    pix_key_type = await DynamicConfig.get("manual_pix_key_type")
+    mode = await DynamicConfig.operation_mode()
+    embed = discord.Embed(
+        title="💳 Configuração de Pix Manual",
+        color=0x00D166,
+    )
+    embed.add_field(
+        name="🤖 Modo de Operação Atual",
+        value=(
+            "✅ **Manual** — a chave Pix abaixo será exibida para o cliente"
+            if mode == "manual" else
+            f"⚠️ Modo atual: **{mode}** — Pix manual só é usado no modo **Manual**"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="🔑 Tipo da Chave",
+        value=f"`{pix_key_type}`" if pix_key_type else "❌ Não configurado",
+        inline=True,
+    )
+    embed.add_field(
+        name="💳 Chave Pix",
+        value=f"`{pix_key}`" if pix_key else "❌ Não configurada",
+        inline=True,
+    )
+    embed.set_footer(text="Configure a chave Pix abaixo e mude o modo para Manual em 🤖 Modo de Operação.")
+    return embed
+
+
+class PixView(ui.View):
+    def __init__(self, bot):
+        super().__init__(timeout=180)
+        self.bot = bot
+
+    @ui.button(label="✏️ Configurar Chave Pix", style=discord.ButtonStyle.green, row=0)
+    async def edit_pix(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.send_modal(PixModal())
+
+    @ui.button(label="🗑️ Remover Chave", style=discord.ButtonStyle.danger, row=0)
+    async def remove_pix(self, interaction: discord.Interaction, button: ui.Button):
+        await DynamicConfig.delete("manual_pix_key")
+        await DynamicConfig.delete("manual_pix_key_type")
+        await interaction.response.edit_message(embed=await build_pix_embed(), view=self)
+        await interaction.followup.send("✅ Chave Pix removida!", ephemeral=True)
+
+    @ui.button(label="⬅️ Voltar", style=discord.ButtonStyle.secondary, custom_id="cfg:pix_back", row=1)
+    async def back(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.edit_message(embed=await build_config_main_embed(), view=ConfigMainView(self.bot))
+
+
+class PixModal(ui.Modal, title="💳 Configurar Chave Pix Manual"):
+    key_type = ui.TextInput(
+        label="Tipo da Chave",
+        placeholder="CPF / CNPJ / Email / Telefone / Aleatória",
+        max_length=20,
+        required=True,
+    )
+    key_value = ui.TextInput(
+        label="Chave Pix",
+        placeholder="Ex: 123.456.789-00 ou email@email.com",
+        max_length=150,
+        required=True,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await DynamicConfig.set("manual_pix_key_type", self.key_type.value.strip(), updated_by=interaction.user.id)
+        await DynamicConfig.set("manual_pix_key", self.key_value.value.strip(), updated_by=interaction.user.id)
+        await LogRepository.log("config_changed", interaction.user.id,
+                                details={"key": "manual_pix_key", "type": self.key_type.value})
+        await interaction.response.send_message(
+            f"✅ Chave Pix configurada!\n"
+            f"**Tipo:** `{self.key_type.value}`\n"
+            f"**Chave:** `{self.key_value.value}`\n\n"
+            "Certifique-se de que o modo está como **Manual** em 🤖 Modo de Operação.",
+            ephemeral=True,
         )
 
 
