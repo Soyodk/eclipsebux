@@ -11,8 +11,11 @@ class MercadoPagoService:
 
     def __init__(self):
         settings = get_settings()
-        self._sdk = mercadopago.SDK(settings.mercadopago_access_token)
+        token = settings.mercadopago_access_token
+        self._sdk = mercadopago.SDK(token) if token else None
         self._expiration_minutes = settings.pix_expiration_minutes
+        if not token:
+            logger.warning("⚠️ MERCADOPAGO_ACCESS_TOKEN não configurado — pagamentos PIX desativados")
 
     async def create_pix_payment(
         self,

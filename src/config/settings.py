@@ -31,8 +31,8 @@ class Settings(BaseSettings):
     )
 
     # Mercado Pago
-    mercadopago_access_token: str = Field(
-        ..., description="Access token do Mercado Pago"
+    mercadopago_access_token: Optional[str] = Field(
+        default=None, description="Access token do Mercado Pago"
     )
     mercadopago_webhook_secret: Optional[str] = Field(default=None)
 

@@ -28,6 +28,24 @@ class Database:
     async def connect(self, database_url: str) -> None:
         """Conecta ao PostgreSQL."""
         try:
+            # Garante que usa o driver asyncpg
+            if database_url.startswith("postgres://"):
+                database_url = database_url.replace("postgres://", "postgresql+asyncpg://", 1)
+            elif database_url.startswith("postgresql://") and "+asyncpg" not in database_url:
+                database_url = database_url.replace("postgresql://", "postgresql+asyncpg://", 1)
+
+            # Remove parâmetros de query incompatíveis com asyncpg (ex: sslmode, sslrootcert)
+            from urllib.parse import urlparse, urlencode, parse_qs, urlunparse
+            parsed = urlparse(database_url)
+            query_params = parse_qs(parsed.query, keep_blank_values=True)
+            # asyncpg lida com SSL via connect_args, não via query string
+            incompatible = {"sslmode", "sslrootcert", "sslcert", "sslkey"}
+            ssl_mode = query_params.pop("sslmode", ["disable"])[0]
+            for key in incompatible:
+                query_params.pop(key, None)
+            clean_query = urlencode({k: v[0] for k, v in query_params.items()})
+            database_url = urlunparse(parsed._replace(query=clean_query))
+
             # Configura SSL se certificados existirem
             ssl_context = None
             cert_path = os.path.join(os.getcwd(), "certs")
